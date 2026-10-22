@@ -1,0 +1,40 @@
+name: sales-caller-waha
+
+services:
+  waha:
+    # Pinned release. WAHA publishes engine-specific tags; this is the
+    # browserless NOWEB build, which is lighter than the Chromium-based image.
+    image: devlikeapro/waha:noweb-2026.9.2
+    container_name: sales-caller-waha
+    restart: unless-stopped
+    env_file:
+      - .env
+    environment:
+      # Use the browserless engine. The image tag and this setting must agree.
+      WHATSAPP_DEFAULT_ENGINE: NOWEB
+    ports:
+      # Bind to WSL loopback only. Windows reaches it through WSL localhost
+      # forwarding. Do not expose port 3000 on the LAN.
+      - "127.0.0.1:3000:3000"
+    volumes:
+      - waha_sessions:/app/.sessions
+      - waha_media:/app/media
+    healthcheck:
+      # The image does not contain wget/curl. Node is present, and /health
+      # requires the same API key as the rest of the API in this setup.
+      test:
+        - CMD-SHELL
+        - >-
+          node -e "fetch('http://127.0.0.1:3000/health',{headers:{'X-Api-Key':process.env.WAHA_API_KEY}}).then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"
+      interval: 30s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+    security_opt:
+      - no-new-privileges:true
+
+volumes:
+  waha_sessions:
+    name: sales_caller_waha_sessions
+  waha_media:
+    name: sales_caller_waha_media

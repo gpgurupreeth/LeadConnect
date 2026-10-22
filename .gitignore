@@ -1,0 +1,73 @@
+# ---------------------------------------------------------------------------
+# Secrets and local environment
+# ---------------------------------------------------------------------------
+.env
+.env.*
+!.env.example
+
+# Local Android SDK path
+local.properties
+
+# Signing material
+*.jks
+*.keystore
+*.p12
+*.pfx
+signing.properties
+keystore.properties
+
+# ---------------------------------------------------------------------------
+# Android / Gradle build output
+# ---------------------------------------------------------------------------
+.gradle/
+build/
+app/build/
+captures/
+.externalNativeBuild/
+.cxx/
+.kotlin/
+
+# Generated packages and binaries
+*.apk
+*.aab
+*.ap_
+*.dex
+*.class
+*.hprof
+
+# Downloaded Gradle distribution (large, reproducible)
+gradle-*-bin.zip
+gradle-*/
+
+# ---------------------------------------------------------------------------
+# IDE files
+# ---------------------------------------------------------------------------
+.idea/
+*.iml
+*.ipr
+*.iws
+out/
+.vscode/
+.history/
+
+# ---------------------------------------------------------------------------
+# Python backend artifacts
+# ---------------------------------------------------------------------------
+.venv/
+venv/
+ENV/
+__pycache__/
+*.py[cod]
+*$py.class
+.pytest_cache/
+.coverage
+htmlcov/
+.tox/
+
+# ---------------------------------------------------------------------------
+# Logs and OS files
+# ---------------------------------------------------------------------------
+*.log
+logs/
+.DS_Store
+Thumbs.db
