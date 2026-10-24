@@ -2,29 +2,19 @@ package com.example.mobileapp
 
 import com.example.mobileapp.data.local.dao.AuditEventDao
 import com.example.mobileapp.data.local.dao.CallAttemptDao
-import com.example.mobileapp.data.local.dao.MessageJobDao
 import com.example.mobileapp.data.local.dao.SuppressionDao
 import com.example.mobileapp.data.local.entities.AuditEventEntity
 import com.example.mobileapp.data.local.entities.CallAttemptEntity
 import com.example.mobileapp.data.local.entities.CustomerEntity
-import com.example.mobileapp.data.local.entities.MessageJobEntity
 import com.example.mobileapp.data.local.entities.SuppressionEntity
 import com.example.mobileapp.domain.model.CallOutcome
-import com.example.mobileapp.domain.model.MessageStatus
 import com.example.mobileapp.domain.workflow.CallStepResult
-import com.example.mobileapp.domain.workflow.MessageDispatchResult
 import com.example.mobileapp.domain.workflow.SequentialCallCoordinator
-import com.example.mobileapp.messaging.DeliveryOutcome
-import com.example.mobileapp.messaging.IMessagingProvider
-import com.example.mobileapp.messaging.MessagePayload
-import com.example.mobileapp.messaging.MessageSendResult
 import com.example.mobileapp.telecom.ICaller
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.emptyFlow
 import kotlinx.coroutines.runBlocking
 import org.junit.Assert.assertEquals
-import org.junit.Assert.assertFalse
-import org.junit.Assert.assertNotEquals
 import org.junit.Assert.assertTrue
 import org.junit.Before
 import org.junit.Test
@@ -33,25 +23,20 @@ class SequentialCallCoordinatorTest {
 
     private lateinit var fakeCaller: FakeCaller
     private lateinit var fakeCallAttemptDao: FakeCallAttemptDao
-    private lateinit var fakeMessageJobDao: FakeMessageJobDao
     private lateinit var fakeSuppressionDao: FakeSuppressionDao
     private lateinit var fakeAuditEventDao: FakeAuditEventDao
-    private lateinit var fakeMessagingProvider: FakeMessagingProvider
     private lateinit var coordinator: SequentialCallCoordinator
 
     @Before
     fun setup() {
         fakeCaller = FakeCaller()
         fakeCallAttemptDao = FakeCallAttemptDao()
-        fakeMessageJobDao = FakeMessageJobDao()
         fakeSuppressionDao = FakeSuppressionDao()
         fakeAuditEventDao = FakeAuditEventDao()
-        fakeMessagingProvider = FakeMessagingProvider()
 
         coordinator = SequentialCallCoordinator(
             caller = fakeCaller,
             callAttemptDao = fakeCallAttemptDao,
-            messageJobDao = fakeMessageJobDao,
             suppressionDao = fakeSuppressionDao,
             auditEventDao = fakeAuditEventDao
         )
@@ -62,7 +47,7 @@ class SequentialCallCoordinatorTest {
         fakeSuppressionDao.suppressedNumbers.add("+919876543210")
         val customer = CustomerEntity(id = 1L, name = "Opted Out", phoneNumber = "+919876543210")
 
-        val result = coordinator.processCustomerCall(1L, customer, "template_1")
+        val result = coordinator.processCustomerCall(1L, customer)
 
         assertTrue(result is CallStepResult.Suppressed)
         assertEquals(0, fakeCaller.callsPlaced.size)
@@ -70,23 +55,21 @@ class SequentialCallCoordinatorTest {
     }
 
     @Test
-    fun `placing call pauses in AwaitingConfirmation state to prevent premature message sending`() = runBlocking {
+    fun `placing call pauses in AwaitingConfirmation state to await human confirmation`() = runBlocking {
         val customer = CustomerEntity(id = 2L, name = "Valid Lead", phoneNumber = "+919876543211")
 
-        val result = coordinator.processCustomerCall(1L, customer, "template_1")
+        val result = coordinator.processCustomerCall(1L, customer)
 
         assertTrue(result is CallStepResult.AwaitingConfirmation)
         assertEquals(1, fakeCaller.callsPlaced.size)
         assertEquals(1, fakeCallAttemptDao.attempts.size)
-        // Message is NOT sent or queued yet
-        assertEquals(0, fakeMessageJobDao.jobs.size)
+        assertEquals("UNKNOWN", fakeCallAttemptDao.attempts.first().outcome)
     }
 
     @Test
     fun `recovery guard prevents redialing customer whose call attempt was already initiated`() = runBlocking {
         val customer = CustomerEntity(id = 3L, name = "Interrupted Lead", phoneNumber = "+919876543212")
 
-        // Simulate that an attempt was initiated before app process crashed
         fakeCallAttemptDao.attempts.add(
             CallAttemptEntity(
                 campaignId = 1L,
@@ -98,8 +81,7 @@ class SequentialCallCoordinatorTest {
             )
         )
 
-        // Attempt to process again following crash recovery
-        val result = coordinator.processCustomerCall(1L, customer, "template_1")
+        val result = coordinator.processCustomerCall(1L, customer)
 
         assertTrue(result is CallStepResult.SkippedAlreadyAttempted)
         assertEquals(0, fakeCaller.callsPlaced.size)
@@ -107,182 +89,54 @@ class SequentialCallCoordinatorTest {
     }
 
     @Test
-    fun `confirming outcome as answered queues follow-up without blocking call thread`() = runBlocking {
-        val result = coordinator.confirmOutcomeAndQueueFollowUp(
+    fun `confirming outcome as answered updates attempt and logs audit event`() = runBlocking {
+        fakeCallAttemptDao.attempts.add(
+            CallAttemptEntity(
+                id = 100L,
+                campaignId = 1L,
+                customerId = 2L,
+                phoneNumber = "+919876543211",
+                callStartTime = System.currentTimeMillis() - 45000,
+                durationSeconds = 0,
+                outcome = CallOutcome.UNKNOWN.name
+            )
+        )
+
+        val result = coordinator.confirmOutcome(
             attemptId = 100L,
-            campaignId = 1L,
-            customerId = 2L,
-            phoneNumber = "+919876543211",
             confirmedOutcome = CallOutcome.ANSWERED,
-            followUpEligible = true,
-            consentGiven = true,
-            templateName = "welcome_followup"
+            notes = "Spoke with lead; interested",
+            durationSeconds = 45
         )
 
         assertTrue(result is CallStepResult.Completed)
         val completed = result as CallStepResult.Completed
         assertEquals(CallOutcome.ANSWERED, completed.outcome)
-        assertTrue(completed.messageQueued)
-        assertEquals(1, fakeMessageJobDao.jobs.size)
-        assertEquals("welcome_followup", fakeMessageJobDao.jobs.first().templateName)
+
+        val updated = fakeCallAttemptDao.attempts.first { it.id == 100L }
+        assertEquals(CallOutcome.ANSWERED.name, updated.outcome)
+        assertEquals(45, updated.durationSeconds)
+        assertEquals("Spoke with lead; interested", updated.notes)
+        assertTrue(fakeAuditEventDao.events.any { it.eventType == "OUTCOME_CONFIRMED" })
     }
 
     @Test
-    fun `suppression enforced right before message dispatch cancels transmission`() = runBlocking {
-        // Enqueue a job
-        coordinator.confirmOutcomeAndQueueFollowUp(
-            attemptId = 101L,
-            campaignId = 1L,
-            customerId = 4L,
-            phoneNumber = "+919876543299",
-            confirmedOutcome = CallOutcome.ANSWERED,
-            followUpEligible = true,
-            consentGiven = true,
-            templateName = "promo_template"
-        )
-        val job = fakeMessageJobDao.jobs.first()
+    fun `failed telephony placement returns CallStepResult Failed`() = runBlocking {
+        fakeCaller.shouldFail = true
+        val customer = CustomerEntity(id = 5L, name = "Failing Lead", phoneNumber = "+919876543255")
 
-        // Customer opts out after call but before worker dispatches message
-        fakeSuppressionDao.suppressedNumbers.add("+919876543299")
+        val result = coordinator.processCustomerCall(1L, customer)
 
-        val dispatchResult = coordinator.dispatchPendingMessageJob(job.jobId, fakeMessagingProvider)
-
-        assertTrue(dispatchResult is MessageDispatchResult.Suppressed)
-        assertEquals(0, fakeMessagingProvider.sentPayloads.size) // No external network dispatch
-        val updatedJob = fakeMessageJobDao.jobs.first { it.jobId == job.jobId }
-        assertEquals(MessageStatus.FAILED.name, updatedJob.status)
-        assertTrue(fakeAuditEventDao.events.any { it.eventType == "MESSAGE_DISPATCH_SUPPRESSED" })
-    }
-
-    @Test
-    fun `message job idempotency is preserved across retries without creating new keys`() = runBlocking {
-        coordinator.confirmOutcomeAndQueueFollowUp(
-            attemptId = 102L,
-            campaignId = 1L,
-            customerId = 5L,
-            phoneNumber = "+919876543255",
-            confirmedOutcome = CallOutcome.ANSWERED,
-            followUpEligible = true,
-            consentGiven = true,
-            templateName = "promo_template"
-        )
-        val originalJob = fakeMessageJobDao.jobs.first()
-
-        // Simulate provider transient failure
-        fakeMessagingProvider.shouldFail = true
-        val retry1 = coordinator.dispatchPendingMessageJob(originalJob.jobId, fakeMessagingProvider)
-
-        assertTrue(retry1 is MessageDispatchResult.RetryScheduled)
-        val retriedJob = fakeMessageJobDao.getJobByJobId(originalJob.jobId)!!
-        assertEquals(originalJob.jobId, retriedJob.jobId) // Exact same idempotency key retained
-        assertEquals(1, retriedJob.retryCount)
-
-        // Genuinely distinct follow-up from a different attempt produces a distinct key
-        coordinator.confirmOutcomeAndQueueFollowUp(
-            attemptId = 103L,
-            campaignId = 1L,
-            customerId = 5L,
-            phoneNumber = "+919876543255",
-            confirmedOutcome = CallOutcome.ANSWERED,
-            followUpEligible = true,
-            consentGiven = true,
-            templateName = "second_followup"
-        )
-        val newJob = fakeMessageJobDao.jobs.last()
-        assertNotEquals(originalJob.jobId, newJob.jobId)
-    }
-
-    @Test
-    fun `confirmed call without consent does not queue a follow-up`() = runBlocking {
-        val result = coordinator.confirmOutcomeAndQueueFollowUp(
-            attemptId = 104L,
-            campaignId = 1L,
-            customerId = 6L,
-            phoneNumber = "+919876543266",
-            confirmedOutcome = CallOutcome.ANSWERED,
-            followUpEligible = true,
-            consentGiven = false,
-            templateName = "promo_template"
-        )
-
-        assertTrue(result is CallStepResult.Completed)
-        assertFalse((result as CallStepResult.Completed).messageQueued)
-        assertEquals(0, fakeMessageJobDao.jobs.size)
-        assertTrue(fakeAuditEventDao.events.any { it.eventType == "MESSAGE_JOB_BLOCKED" })
-    }
-
-    @Test
-    fun `opted out customer does not queue a follow-up even with consent`() = runBlocking {
-        fakeSuppressionDao.suppressedNumbers.add("+919876543277")
-        val result = coordinator.confirmOutcomeAndQueueFollowUp(
-            attemptId = 105L,
-            campaignId = 1L,
-            customerId = 7L,
-            phoneNumber = "+919876543277",
-            confirmedOutcome = CallOutcome.NO_ANSWER,
-            followUpEligible = true,
-            consentGiven = true,
-            templateName = "promo_template"
-        )
-
-        assertTrue(result is CallStepResult.Completed)
-        assertFalse((result as CallStepResult.Completed).messageQueued)
-        assertEquals(0, fakeMessageJobDao.jobs.size)
-    }
-
-    @Test
-    fun `dispatch refuses a legacy job without verified consent`() = runBlocking {
-        val job = MessageJobEntity(
-            jobId = "legacy_job_without_consent",
-            campaignId = 1L,
-            customerId = 8L,
-            phoneNumber = "+919876543288",
-            templateName = "promo_template",
-            parametersJson = "{}",
-            status = MessageStatus.PENDING.name,
-            consentVerified = false
-        )
-        fakeMessageJobDao.jobs.add(job)
-
-        val result = coordinator.dispatchPendingMessageJob(job.jobId, fakeMessagingProvider)
-
-        assertTrue(result is MessageDispatchResult.Failed)
-        assertEquals(0, fakeMessagingProvider.attemptCount)
-        assertEquals(MessageStatus.FAILED.name, fakeMessageJobDao.jobs.first().status)
-        assertTrue(
-            fakeAuditEventDao.events.any { it.eventType == "MESSAGE_DISPATCH_BLOCKED_NO_CONSENT" }
-        )
-    }
-
-    @Test
-    fun `unknown delivery marks job unknown and blocks automatic retry`() = runBlocking {
-        val job = MessageJobEntity(
-            jobId = "job_unknown_outcome",
-            campaignId = 1L,
-            customerId = 9L,
-            phoneNumber = "+919876543299",
-            templateName = "promo_template",
-            parametersJson = "{}",
-            status = MessageStatus.PENDING.name,
-            consentVerified = true
-        )
-        fakeMessageJobDao.jobs.add(job)
-        fakeMessagingProvider.shouldReturnUnknown = true
-
-        val first = coordinator.dispatchPendingMessageJob(job.jobId, fakeMessagingProvider)
-        val second = coordinator.dispatchPendingMessageJob(job.jobId, fakeMessagingProvider)
-
-        assertTrue(first is MessageDispatchResult.Unknown)
-        assertTrue(second is MessageDispatchResult.Unknown)
-        assertEquals(1, fakeMessagingProvider.attemptCount)
-        assertEquals(MessageStatus.UNKNOWN.name, fakeMessageJobDao.jobs.first().status)
-        assertTrue(fakeAuditEventDao.events.any { it.eventType == "MESSAGE_DISPATCH_UNKNOWN" })
+        assertTrue(result is CallStepResult.Failed)
+        assertEquals(0, fakeCallAttemptDao.attempts.size)
     }
 
     // --- Fakes ---
     class FakeCaller : ICaller {
+        var shouldFail = false
         val callsPlaced = mutableListOf<String>()
         override fun placeCall(phoneNumber: String): Boolean {
+            if (shouldFail) return false
             callsPlaced.add(phoneNumber)
             return true
         }
@@ -290,6 +144,10 @@ class SequentialCallCoordinatorTest {
 
     class FakeCallAttemptDao : CallAttemptDao {
         val attempts = mutableListOf<CallAttemptEntity>()
+        override fun getAllHistory(): Flow<List<CallAttemptEntity>> = emptyFlow()
+        override fun getAttemptsForSection(sectionId: Long): Flow<List<CallAttemptEntity>> = emptyFlow()
+        override suspend fun deleteAttemptsBySection(sectionId: Long) { attempts.removeAll { it.campaignId == sectionId } }
+        override suspend fun clearAllHistory() { attempts.clear() }
         override fun getAttemptsForCampaign(campaignId: Long): Flow<List<CallAttemptEntity>> = emptyFlow()
         override fun getRecentAttempts(limit: Int): Flow<List<CallAttemptEntity>> = emptyFlow()
         override suspend fun hasAttemptForCustomer(campaignId: Long, customerId: Long): Boolean {
@@ -299,8 +157,9 @@ class SequentialCallCoordinatorTest {
             return attempts.filter { it.campaignId == campaignId && it.customerId == customerId }.maxByOrNull { it.timestamp }
         }
         override suspend fun insert(attempt: CallAttemptEntity): Long {
-            attempts.add(attempt)
-            return attempts.size.toLong()
+            val assignedId = if (attempt.id == 0L) (attempts.size + 1).toLong() else attempt.id
+            attempts.add(attempt.copy(id = assignedId))
+            return assignedId
         }
         override suspend fun update(attempt: CallAttemptEntity) {
             val idx = attempts.indexOfFirst { it.id == attempt.id }
@@ -310,7 +169,6 @@ class SequentialCallCoordinatorTest {
             attemptId: Long,
             outcome: String,
             notes: String?,
-            followUpEligible: Boolean,
             endTime: Long,
             duration: Int
         ) {
@@ -319,31 +177,9 @@ class SequentialCallCoordinatorTest {
                 attempts[idx] = attempts[idx].copy(
                     outcome = outcome,
                     notes = notes,
-                    followUpEligible = followUpEligible,
                     callEndTime = endTime,
                     durationSeconds = duration
                 )
-            }
-        }
-    }
-
-    class FakeMessageJobDao : MessageJobDao {
-        val jobs = mutableListOf<MessageJobEntity>()
-        override fun getAllJobsFlow(): Flow<List<MessageJobEntity>> = emptyFlow()
-        override fun getJobsByStatus(status: String): Flow<List<MessageJobEntity>> = emptyFlow()
-        override suspend fun getPendingJobsList(status: String): List<MessageJobEntity> {
-            return jobs.filter { it.status == status }
-        }
-        override suspend fun getJobByJobId(jobId: String): MessageJobEntity? = jobs.find { it.jobId == jobId }
-        override suspend fun insert(job: MessageJobEntity): Long {
-            if (jobs.any { it.jobId == job.jobId }) return -1L
-            jobs.add(job)
-            return jobs.size.toLong()
-        }
-        override suspend fun update(job: MessageJobEntity) {
-            val index = jobs.indexOfFirst { it.jobId == job.jobId }
-            if (index != -1) {
-                jobs[index] = job
             }
         }
     }
@@ -364,39 +200,5 @@ class SequentialCallCoordinatorTest {
             events.add(event)
             return events.size.toLong()
         }
-    }
-
-    class FakeMessagingProvider : IMessagingProvider {
-        val sentPayloads = mutableListOf<MessagePayload>()
-        var shouldFail = false
-        var shouldReturnUnknown = false
-        var attemptCount = 0
-
-        override suspend fun sendMessage(payload: MessagePayload): MessageSendResult {
-            attemptCount++
-            if (shouldReturnUnknown) {
-                return MessageSendResult(
-                    success = false,
-                    error = "Provider timeout after request was written; outcome unknown",
-                    outcome = DeliveryOutcome.UNKNOWN
-                )
-            }
-            return if (shouldFail) {
-                MessageSendResult(
-                    success = false,
-                    error = "Definitive provider rejection",
-                    outcome = DeliveryOutcome.NOT_SENT
-                )
-            } else {
-                sentPayloads.add(payload)
-                MessageSendResult(
-                    success = true,
-                    providerMessageId = "wa_msg_${sentPayloads.size}",
-                    outcome = DeliveryOutcome.ACCEPTED
-                )
-            }
-        }
-
-        override suspend fun getDeliveryStatus(jobId: String): MessageStatus = MessageStatus.SENT
     }
 }

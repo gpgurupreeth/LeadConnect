@@ -2,12 +2,10 @@ package com.example.mobileapp
 
 import com.example.mobileapp.data.local.dao.AuditEventDao
 import com.example.mobileapp.data.local.dao.CallAttemptDao
-import com.example.mobileapp.data.local.dao.MessageJobDao
 import com.example.mobileapp.data.local.dao.SuppressionDao
 import com.example.mobileapp.data.local.entities.AuditEventEntity
 import com.example.mobileapp.data.local.entities.CallAttemptEntity
 import com.example.mobileapp.data.local.entities.CustomerEntity
-import com.example.mobileapp.data.local.entities.MessageJobEntity
 import com.example.mobileapp.domain.model.CallOutcome
 import com.example.mobileapp.domain.model.CampaignStateMachine
 import com.example.mobileapp.domain.model.CampaignStatus
@@ -54,17 +52,15 @@ class CampaignAutomationAndSafeDemoTest {
     }
 
     @Test
-    fun `test sequential progression with safe confirmation and automated follow-up queuing`() = runBlocking {
+    fun `test sequential progression with safe confirmation`() = runBlocking {
         val demoCaller = DemoSimCaller()
         val mockAttemptDao = MockCallAttemptDao()
-        val mockJobDao = MockMessageJobDao()
         val mockSuppressionDao = MockSuppressionDao()
         val mockAuditDao = MockAuditEventDao()
 
         val coordinator = SequentialCallCoordinator(
             caller = demoCaller,
             callAttemptDao = mockAttemptDao,
-            messageJobDao = mockJobDao,
             suppressionDao = mockSuppressionDao,
             auditEventDao = mockAuditDao
         )
@@ -73,18 +69,15 @@ class CampaignAutomationAndSafeDemoTest {
             id = 1L,
             name = "Test Lead",
             phoneNumber = "+919876543210",
-            company = "Test Co",
-            consentGiven = true
+            company = "Test Co"
         )
 
         // Step 1: Initiate call
         val step1 = coordinator.processCustomerCall(
             campaignId = 100L,
-            customer = lead,
-            templateName = "welcome_followup"
+            customer = lead
         )
 
-        // Verifications:
         // Must pause for confirmation rather than auto-assuming outcome
         assertTrue(step1 is CallStepResult.AwaitingConfirmation)
         val awaiting = step1 as CallStepResult.AwaitingConfirmation
@@ -95,33 +88,27 @@ class CampaignAutomationAndSafeDemoTest {
         assertEquals("UNKNOWN", mockAttemptDao.savedAttempts.first().outcome)
 
         // Step 2: Confirm human outcome
-        val step2 = coordinator.confirmOutcomeAndQueueFollowUp(
+        val step2 = coordinator.confirmOutcome(
             attemptId = awaiting.attemptId,
-            campaignId = 100L,
-            customerId = lead.id,
-            phoneNumber = lead.phoneNumber,
             confirmedOutcome = CallOutcome.ANSWERED,
-            followUpEligible = true,
-            consentGiven = lead.consentGiven,
-            templateName = "welcome_followup"
+            notes = "Lead spoke for 45s",
+            durationSeconds = 45
         )
 
         assertTrue(step2 is CallStepResult.Completed)
         val completed = step2 as CallStepResult.Completed
         assertEquals(CallOutcome.ANSWERED, completed.outcome)
-        assertTrue(completed.messageQueued)
 
-        // Verified that follow-up job was queued in DB with deterministic key
-        assertEquals(1, mockJobDao.savedJobs.size)
-        assertEquals("+919876543210", mockJobDao.savedJobs.first().phoneNumber)
-        assertEquals("welcome_followup", mockJobDao.savedJobs.first().templateName)
+        val updatedAttempt = mockAttemptDao.savedAttempts.first { it.id == awaiting.attemptId }
+        assertEquals(CallOutcome.ANSWERED.name, updatedAttempt.outcome)
+        assertEquals(45, updatedAttempt.durationSeconds)
+        assertEquals("Lead spoke for 45s", updatedAttempt.notes)
     }
 
     @Test
     fun `test pre-dial suppression skips calling and triggers no simulated call`() = runBlocking {
         val demoCaller = DemoSimCaller()
         val mockAttemptDao = MockCallAttemptDao()
-        val mockJobDao = MockMessageJobDao()
         val mockSuppressionDao = MockSuppressionDao()
         val mockAuditDao = MockAuditEventDao()
 
@@ -130,7 +117,6 @@ class CampaignAutomationAndSafeDemoTest {
         val coordinator = SequentialCallCoordinator(
             caller = demoCaller,
             callAttemptDao = mockAttemptDao,
-            messageJobDao = mockJobDao,
             suppressionDao = mockSuppressionDao,
             auditEventDao = mockAuditDao
         )
@@ -144,8 +130,7 @@ class CampaignAutomationAndSafeDemoTest {
 
         val result = coordinator.processCustomerCall(
             campaignId = 100L,
-            customer = suppressedLead,
-            templateName = "welcome_followup"
+            customer = suppressedLead
         )
 
         assertTrue(result is CallStepResult.Suppressed)
@@ -153,10 +138,13 @@ class CampaignAutomationAndSafeDemoTest {
         assertEquals(0, mockAttemptDao.savedAttempts.size)
     }
 
-    // Mock DAOs for Unit Testing
     private class MockCallAttemptDao : CallAttemptDao {
         val savedAttempts = mutableListOf<CallAttemptEntity>()
 
+        override fun getAllHistory(): Flow<List<CallAttemptEntity>> = emptyFlow()
+        override fun getAttemptsForSection(sectionId: Long): Flow<List<CallAttemptEntity>> = emptyFlow()
+        override suspend fun deleteAttemptsBySection(sectionId: Long) { savedAttempts.removeAll { it.campaignId == sectionId } }
+        override suspend fun clearAllHistory() { savedAttempts.clear() }
         override fun getAttemptsForCampaign(campaignId: Long): Flow<List<CallAttemptEntity>> = emptyFlow()
         override fun getRecentAttempts(limit: Int): Flow<List<CallAttemptEntity>> = emptyFlow()
         override suspend fun hasAttemptForCustomer(campaignId: Long, customerId: Long): Boolean =
@@ -175,7 +163,6 @@ class CampaignAutomationAndSafeDemoTest {
             attemptId: Long,
             outcome: String,
             notes: String?,
-            followUpEligible: Boolean,
             endTime: Long,
             duration: Int
         ) {
@@ -184,27 +171,10 @@ class CampaignAutomationAndSafeDemoTest {
                 savedAttempts[idx] = savedAttempts[idx].copy(
                     outcome = outcome,
                     notes = notes,
-                    followUpEligible = followUpEligible,
                     callEndTime = endTime,
                     durationSeconds = duration
                 )
             }
-        }
-    }
-
-    private class MockMessageJobDao : MessageJobDao {
-        val savedJobs = mutableListOf<MessageJobEntity>()
-        override fun getAllJobsFlow(): Flow<List<MessageJobEntity>> = emptyFlow()
-        override fun getJobsByStatus(status: String): Flow<List<MessageJobEntity>> = emptyFlow()
-        override suspend fun getPendingJobsList(status: String): List<MessageJobEntity> = savedJobs.filter { it.status == status }
-        override suspend fun getJobByJobId(jobId: String): MessageJobEntity? = savedJobs.find { it.jobId == jobId }
-        override suspend fun insert(job: MessageJobEntity): Long {
-            savedJobs.add(job)
-            return savedJobs.size.toLong()
-        }
-        override suspend fun update(job: MessageJobEntity) {
-            val idx = savedJobs.indexOfFirst { it.jobId == job.jobId }
-            if (idx != -1) savedJobs[idx] = job
         }
     }
 

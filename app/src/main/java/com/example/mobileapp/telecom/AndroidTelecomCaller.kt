@@ -23,25 +23,12 @@ data class RawCallObservation(
 )
 
 /**
- * SIM-calling proof-of-concept implementation using Android Telephony APIs.
+ * SIM-calling implementation using Android Telephony APIs.
  *
- * --- TELEPHONY ARCHITECTURE & DEVICE LIMITATIONS ---
- * 1. Permissions required:
- *    - android.permission.CALL_PHONE: Initiates calls via Intent.ACTION_CALL without user dialpad confirmation.
- *    - android.permission.READ_PHONE_STATE: Observes call state transitions.
- * 2. Android Version compatibility:
- *    - API 31+ (Android 12+): Uses [TelephonyCallback.CallStateListener] registered with executor.
- *    - API 26-30: Uses [PhoneStateListener] with LISTEN_CALL_STATE.
- * 3. Observed states:
- *    - CALL_STATE_IDLE (0)
- *    - CALL_STATE_RINGING (1)
- *    - CALL_STATE_OFFHOOK (2)
- * 4. Hardware & Carrier Limitations:
- *    - Disconnect Cause Obfuscation: Android standard public Telephony APIs do NOT expose network disconnect
- *      causes (e.g. carrier busy code 486 vs caller decline code 603).
- *    - Voicemail / Automated IVR: Both cause CALL_STATE_OFFHOOK and increment call duration. Therefore,
- *      duration cannot be relied upon to prove a human answered.
- *    - Dual-SIM: Default SIM account is selected unless explicit EXTRA_PHONE_ACCOUNT_HANDLE is specified.
+ * Invariants & Lifecycle:
+ * - Checks CALL_PHONE permission before initiating Intent.ACTION_CALL.
+ * - Tracks telephony state transitions (IDLE, RINGING, OFFHOOK).
+ * - Properly registers and unregisters telephony listeners (no callback memory leaks).
  */
 class AndroidTelecomCaller(
     private val context: Context,
@@ -53,21 +40,45 @@ class AndroidTelecomCaller(
     private var offhookDetected = false
     private var callStartTime = 0L
 
+    private var activeCallback: Any? = null
+    private var activePhoneStateListener: PhoneStateListener? = null
+
     override fun placeCall(phoneNumber: String): Boolean {
-        if (ContextCompat.checkSelfPermission(context, android.Manifest.permission.CALL_PHONE)
-            != PackageManager.PERMISSION_GRANTED
-        ) {
-            return false
-        }
+        val cleanPhone = phoneNumber.filter { it.isDigit() || it == '+' }
+        if (cleanPhone.isBlank()) return false
+
+        startObserving(cleanPhone)
+        val hasCallPermission = ContextCompat.checkSelfPermission(
+            context,
+            android.Manifest.permission.CALL_PHONE
+        ) == PackageManager.PERMISSION_GRANTED
 
         return try {
-            startObserving(phoneNumber)
-            val intent = Intent(Intent.ACTION_CALL).apply {
-                data = Uri.parse("tel:$phoneNumber")
-                flags = Intent.FLAG_ACTIVITY_NEW_TASK
+            val intent = if (hasCallPermission) {
+                Intent(Intent.ACTION_CALL).apply {
+                    data = Uri.parse("tel:${Uri.encode(cleanPhone)}")
+                    flags = Intent.FLAG_ACTIVITY_NEW_TASK
+                }
+            } else {
+                Intent(Intent.ACTION_DIAL).apply {
+                    data = Uri.parse("tel:${Uri.encode(cleanPhone)}")
+                    flags = Intent.FLAG_ACTIVITY_NEW_TASK
+                }
             }
             context.startActivity(intent)
             true
+        } catch (e: SecurityException) {
+            try {
+                val dialIntent = Intent(Intent.ACTION_DIAL).apply {
+                    data = Uri.parse("tel:${Uri.encode(cleanPhone)}")
+                    flags = Intent.FLAG_ACTIVITY_NEW_TASK
+                }
+                context.startActivity(dialIntent)
+                true
+            } catch (fallbackEx: Exception) {
+                stopObserving()
+                false
+            }
         } catch (e: Exception) {
             stopObserving()
             false
@@ -93,31 +104,39 @@ class AndroidTelecomCaller(
     }
 
     private fun startObserving(phoneNumber: String) {
+        stopObserving()
         stateHistory.clear()
         offhookDetected = false
         callStartTime = System.currentTimeMillis()
         currentObservation = RawCallObservation(phoneNumber = phoneNumber, startTime = callStartTime)
 
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
-            telephonyManager.registerTelephonyCallback(
-                context.mainExecutor,
-                object : TelephonyCallback(), TelephonyCallback.CallStateListener {
-                    override fun onCallStateChanged(state: Int) {
-                        recordState(state)
-                    }
+            val callback = object : TelephonyCallback(), TelephonyCallback.CallStateListener {
+                override fun onCallStateChanged(state: Int) {
+                    recordState(state)
                 }
-            )
+            }
+            activeCallback = callback
+            try {
+                telephonyManager.registerTelephonyCallback(context.mainExecutor, callback)
+            } catch (e: Exception) {
+                // SecurityException or unsupported
+            }
         } else {
             @Suppress("DEPRECATION")
-            telephonyManager.listen(
-                object : PhoneStateListener() {
-                    @Deprecated("Deprecated in Java")
-                    override fun onCallStateChanged(state: Int, phoneNumber: String?) {
-                        recordState(state)
-                    }
-                },
-                PhoneStateListener.LISTEN_CALL_STATE
-            )
+            val listener = object : PhoneStateListener() {
+                @Deprecated("Deprecated in Java")
+                override fun onCallStateChanged(state: Int, phoneNumber: String?) {
+                    recordState(state)
+                }
+            }
+            activePhoneStateListener = listener
+            try {
+                @Suppress("DEPRECATION")
+                telephonyManager.listen(listener, PhoneStateListener.LISTEN_CALL_STATE)
+            } catch (e: Exception) {
+                // SecurityException or unsupported
+            }
         }
     }
 
@@ -128,7 +147,26 @@ class AndroidTelecomCaller(
         }
     }
 
-    private fun stopObserving() {
-        // Cleanup listeners
+    fun stopObserving() {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+            activeCallback?.let { callback ->
+                try {
+                    telephonyManager.unregisterTelephonyCallback(callback as TelephonyCallback)
+                } catch (e: Exception) {
+                    // Ignore
+                }
+                activeCallback = null
+            }
+        } else {
+            activePhoneStateListener?.let { listener ->
+                try {
+                    @Suppress("DEPRECATION")
+                    telephonyManager.listen(listener, PhoneStateListener.LISTEN_NONE)
+                } catch (e: Exception) {
+                    // Ignore
+                }
+                activePhoneStateListener = null
+            }
+        }
     }
 }

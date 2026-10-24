@@ -5,23 +5,28 @@ import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import com.example.mobileapp.data.local.AppDatabase
 import com.example.mobileapp.data.local.entities.AuditEventEntity
+import com.example.mobileapp.data.local.entities.CallAttemptEntity
 import com.example.mobileapp.data.local.entities.CampaignEntity
 import com.example.mobileapp.data.local.entities.CustomerEntity
 import com.example.mobileapp.data.local.entities.SuppressionEntity
-import com.example.mobileapp.domain.engine.CampaignEngine
-import com.example.mobileapp.domain.model.CallOutcome
-import com.example.mobileapp.domain.model.CampaignStatus
-import com.example.mobileapp.domain.workflow.CallingHoursConfig
-import com.example.mobileapp.messaging.ProxyContractStatus
-import com.example.mobileapp.security.SecureStorage
-import com.example.mobileapp.utils.ParsedContact
-import com.example.mobileapp.utils.IdempotencyUtils
+import com.example.mobileapp.telecom.AndroidTelecomCaller
+import com.example.mobileapp.utils.ContactImportParser
+import com.example.mobileapp.utils.ImportSummary
+import com.example.mobileapp.utils.PhoneNumberUtils
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import android.content.Context
+import android.content.Intent
+import android.widget.Toast
+import androidx.core.content.FileProvider
+import java.io.File
+import java.text.SimpleDateFormat
+import java.util.Date
+import java.util.Locale
 
 class AppViewModel(application: Application) : AndroidViewModel(application) {
 
@@ -29,185 +34,188 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
     val customerDao = db.customerDao()
     val campaignDao = db.campaignDao()
     val callAttemptDao = db.callAttemptDao()
-    val messageJobDao = db.messageJobDao()
     val suppressionDao = db.suppressionDao()
     val auditEventDao = db.auditEventDao()
 
-    val secureStorage = SecureStorage(application)
-    val engine = CampaignEngine(application, db, viewModelScope)
+    val realCaller = AndroidTelecomCaller(application)
 
-    val customersFlow: Flow<List<CustomerEntity>> = customerDao.getAllCustomers()
-    val campaignsFlow: Flow<List<CampaignEntity>> = campaignDao.getAllCampaigns()
-    val messageJobsFlow = messageJobDao.getAllJobsFlow()
-    val auditEventsFlow = auditEventDao.getRecentEvents(50)
-
-    private val _isDemoMode = MutableStateFlow(true)
-    val isDemoMode = _isDemoMode.asStateFlow()
+    // Sections (Campaigns)
+    val sectionsFlow: Flow<List<CampaignEntity>> = campaignDao.getAllCampaigns()
 
     private val _defaultCountryCode = MutableStateFlow("+91")
     val defaultCountryCode = _defaultCountryCode.asStateFlow()
 
-    private val _proxyUrl = MutableStateFlow(secureStorage.getBackendUrl())
-    val proxyUrl = _proxyUrl.asStateFlow()
+    private val _activeCallingCustomer = MutableStateFlow<CustomerEntity?>(null)
+    val activeCallingCustomer = _activeCallingCustomer.asStateFlow()
 
-    private val _proxyToken = MutableStateFlow(secureStorage.getBackendToken() ?: "")
-    val proxyToken = _proxyToken.asStateFlow()
+    private val _callStartTime = MutableStateFlow(0L)
+    val callStartTime = _callStartTime.asStateFlow()
 
-    private val _proxyContractStatus = MutableStateFlow<ProxyContractStatus?>(null)
-    val proxyContractStatus = _proxyContractStatus.asStateFlow()
+    val allHistoryFlow: Flow<List<CallAttemptEntity>> = callAttemptDao.getAllHistory()
 
-    init {
-        engine.isDemoMode = _isDemoMode.value
-        engine.defaultCountryCode = _defaultCountryCode.value
-        engine.backendProxyClient.baseUrl = _proxyUrl.value
-        engine.backendProxyClient.sessionToken = _proxyToken.value.takeIf { it.isNotBlank() }
+    fun getCustomersForSection(sectionId: Long): Flow<List<CustomerEntity>> {
+        return customerDao.getCustomersForSection(sectionId)
     }
 
-    fun setDemoMode(enabled: Boolean) {
-        _isDemoMode.value = enabled
-        engine.isDemoMode = enabled
+    fun getAttemptsForSection(sectionId: Long): Flow<List<CallAttemptEntity>> {
+        return callAttemptDao.getAttemptsForSection(sectionId)
     }
 
-    fun setDefaultCountryCode(code: String) {
-        _defaultCountryCode.value = code
-        engine.defaultCountryCode = code
+    /**
+     * Places a direct cellular phone call using the device's physical SIM card.
+     */
+    fun dialCustomer(customer: CustomerEntity): Boolean {
+        _activeCallingCustomer.value = customer
+        _callStartTime.value = System.currentTimeMillis()
+        return realCaller.placeCall(customer.phoneNumber)
     }
 
-    fun updateCallingHours(startHour: Int, endHour: Int, enforce: Boolean) {
-        engine.callingHoursConfig = CallingHoursConfig(
-            startHour = startHour,
-            endHour = endHour,
-            enforceCallingHours = enforce
-        )
-    }
-
-    fun saveBackendProxyConfig(url: String, token: String) {
-        secureStorage.saveBackendUrl(url)
-        secureStorage.saveBackendToken(token)
-        _proxyUrl.value = url
-        _proxyToken.value = token
-        engine.backendProxyClient.baseUrl = url
-        engine.backendProxyClient.sessionToken = token.takeIf { it.isNotBlank() }
-        _proxyContractStatus.value = null // reset verification on config change
-    }
-
-    fun verifyBackendProxyContract(onResult: (ProxyContractStatus) -> Unit) {
-        viewModelScope.launch(Dispatchers.IO) {
-            val status = engine.verifyBackendProxy()
-            _proxyContractStatus.value = status
-            withContext(Dispatchers.Main) {
-                onResult(status)
-            }
-        }
-    }
-
-    fun retryMessageJob(jobId: String, confirmUnknown: Boolean = false) {
-        viewModelScope.launch(Dispatchers.IO) {
-            val job = messageJobDao.getJobByJobId(jobId) ?: return@launch
-
-            if (job.status == "SENDING") {
-                auditEventDao.insert(
-                    AuditEventEntity(
-                        eventType = "MESSAGE_JOB_RETRY_BLOCKED",
-                        details = "Job $jobId is SENDING and cannot be retried automatically."
-                    )
-                )
-                return@launch
-            }
-
-            if (job.status == "UNKNOWN" && !confirmUnknown) {
-                auditEventDao.insert(
-                    AuditEventEntity(
-                        eventType = "MESSAGE_JOB_RETRY_BLOCKED",
-                        details = "Unknown delivery for job $jobId requires explicit manual verification."
-                    )
-                )
-                return@launch
-            }
-
-            // A definitive not-sent failure may reuse the same idempotency key.
-            // An unknown delivery needs a new key after the agent verifies the
-            // WhatsApp account, because the server may have locked the old key.
-            val newJobId = if (job.status == "UNKNOWN") {
-                IdempotencyUtils.generateManualRetryJobId(job.jobId)
-            } else {
-                job.jobId
-            }
-
-            val updated = job.copy(
-                jobId = newJobId,
-                status = "PENDING",
-                retryCount = 0,
-                lastError = null,
-                nextRetryTime = null,
-                providerMessageId = null,
-                updatedAt = System.currentTimeMillis()
-            )
-            messageJobDao.update(updated)
-            auditEventDao.insert(
-                AuditEventEntity(
-                    eventType = "MESSAGE_JOB_RETRY_REQUESTED",
-                    details = if (newJobId == jobId) {
-                        "Agent manually queued job $jobId for retry with the same idempotency key"
-                    } else {
-                        "Agent verified unknown delivery for $jobId and created new key $newJobId"
-                    }
-                )
-            )
-        }
-    }
-
-    fun deleteCustomer(customer: CustomerEntity) {
-        viewModelScope.launch(Dispatchers.IO) {
-            customerDao.updateSuppressionStatus(customer.phoneNumber, false)
-            suppressionDao.delete(customer.phoneNumber)
-            // Remove from customer table
-            val all = customerDao.getEligibleCustomers() // or direct delete
-            customerDao.deleteAll()
-            // re-insert remaining
-            customerDao.insertAll(all.filter { it.id != customer.id })
-            auditEventDao.insert(
-                AuditEventEntity(
-                    eventType = "CUSTOMER_DELETED",
-                    details = "Customer ${customer.name} (${customer.phoneNumber}) deleted"
-                )
-            )
-        }
-    }
-
-    fun importContacts(
-        parsedContacts: List<ParsedContact>,
-        onComplete: (savedCount: Int) -> Unit
+    /**
+     * Records call outcome (INTERESTED, CALLBACK, NO_ANSWER, NOT_INTERESTED) with duration and notes.
+     */
+    fun recordCallOutcome(
+        customer: CustomerEntity,
+        outcome: String,
+        notes: String? = null,
+        explicitDurationSeconds: Int? = null
     ) {
         viewModelScope.launch(Dispatchers.IO) {
-            val suppressedInDb = suppressionDao.getAllSuppressedNumbers().toSet()
-            val existingSuppressedCust = customerDao.getSuppressedCustomerNumbers().toSet()
-            val allSuppressed = suppressedInDb + existingSuppressedCust
+            val now = System.currentTimeMillis()
+            val startTime = _callStartTime.value.takeIf { it > 0 } ?: now
+            val durationSeconds = explicitDurationSeconds ?: ((now - startTime) / 1000).toInt().coerceAtLeast(0)
+            val isCleared = (outcome != "NO_ANSWER")
 
-            val entitiesToSave = parsedContacts
+            // 1. Update customer record in this section
+            customerDao.updateCallOutcome(
+                customerId = customer.id,
+                status = outcome,
+                duration = durationSeconds,
+                notes = notes,
+                timestamp = now,
+                isCleared = isCleared
+            )
+
+            // 2. Persist in call history for this section
+            val attempt = CallAttemptEntity(
+                campaignId = customer.sectionId,
+                customerId = customer.id,
+                phoneNumber = customer.phoneNumber,
+                contactName = customer.name,
+                callStartTime = startTime,
+                callEndTime = now,
+                durationSeconds = durationSeconds,
+                outcome = outcome,
+                notes = notes,
+                timestamp = now
+            )
+            callAttemptDao.insert(attempt)
+
+            // 3. Update section completed count
+            val sectionLeads = customerDao.getCustomersForSectionList(customer.sectionId)
+            val completed = sectionLeads.count { it.isCleared }
+            campaignDao.updateCounts(customer.sectionId, sectionLeads.size, completed)
+
+            // 4. If Not Interested, mark DND
+            if (outcome == "NOT_INTERESTED") {
+                suppressionDao.insert(
+                    SuppressionEntity(
+                        phoneNumber = customer.phoneNumber,
+                        reason = "Customer marked Not Interested / DND by caller"
+                    )
+                )
+                customerDao.updateSuppressionStatus(customer.phoneNumber, true)
+            }
+
+            _activeCallingCustomer.value = null
+            _callStartTime.value = 0L
+        }
+    }
+
+    fun cancelActiveCall() {
+        _activeCallingCustomer.value = null
+        _callStartTime.value = 0L
+    }
+
+    /**
+     * Creates a new named section (e.g. "Real Estate", "B2B Tech") and imports verified leads into it.
+     */
+    fun createSectionAndImportCsv(
+        sectionName: String,
+        genre: String? = null,
+        csvContent: String,
+        onComplete: (sectionId: Long, summary: ImportSummary) -> Unit
+    ) {
+        viewModelScope.launch(Dispatchers.IO) {
+            val suppressed = suppressionDao.getAllSuppressedNumbers().toSet()
+            val summary = ContactImportParser.parseCsv(
+                content = csvContent,
+                defaultCountryCode = _defaultCountryCode.value,
+                suppressedNumbers = suppressed
+            )
+
+            val section = CampaignEntity(
+                name = sectionName.ifBlank { "Leads Batch ${SimpleDateFormat("dd MMM", Locale.getDefault()).format(Date())}" },
+                genre = genre?.takeIf { it.isNotBlank() },
+                status = "ACTIVE",
+                totalContacts = summary.validCount,
+                completedContacts = 0,
+                createdAt = System.currentTimeMillis()
+            )
+            val sectionId = campaignDao.insert(section)
+
+            val entities = summary.parsedContacts
                 .filter { it.isValid && !it.isDuplicate }
                 .map { parsed ->
-                    val shouldSuppress = parsed.isSuppressed || allSuppressed.contains(parsed.phoneNumber)
+                    val verified = PhoneNumberUtils.verify(parsed.phoneNumber, _defaultCountryCode.value)
                     CustomerEntity(
+                        sectionId = sectionId,
                         name = parsed.name,
-                        phoneNumber = parsed.phoneNumber,
+                        phoneNumber = verified.normalizedNumber,
                         company = parsed.company,
                         tags = parsed.notes,
-                        isSuppressed = shouldSuppress
+                        isSuppressed = parsed.isSuppressed,
+                        callStatus = "NOT_CALLED",
+                        isCleared = false,
+                        isVerified = verified.isValid
                     )
                 }
 
-            customerDao.insertAll(entitiesToSave)
+            if (entities.isNotEmpty()) {
+                customerDao.insertAll(entities)
+            }
 
-            auditEventDao.insert(
-                AuditEventEntity(
-                    eventType = "CONTACTS_IMPORTED",
-                    details = "Imported ${entitiesToSave.size} contacts. (${entitiesToSave.count { it.isSuppressed }} suppressed)"
-                )
-            )
+            campaignDao.updateCounts(sectionId, entities.size, 0)
 
             withContext(Dispatchers.Main) {
-                onComplete(entitiesToSave.size)
+                onComplete(sectionId, summary)
+            }
+        }
+    }
+
+    /**
+     * Deletes a single section and all leads belonging to it.
+     */
+    fun deleteSection(sectionId: Long, onComplete: () -> Unit) {
+        viewModelScope.launch(Dispatchers.IO) {
+            customerDao.deleteCustomersBySection(sectionId)
+            callAttemptDao.deleteAttemptsBySection(sectionId)
+            campaignDao.deleteCampaign(sectionId)
+            withContext(Dispatchers.Main) {
+                onComplete()
+            }
+        }
+    }
+
+    /**
+     * Deletes ALL sections and ALL leads in a single 1-tap delete option!
+     */
+    fun deleteAllSectionsAndLeads(onComplete: () -> Unit) {
+        viewModelScope.launch(Dispatchers.IO) {
+            customerDao.deleteAll()
+            callAttemptDao.clearAllHistory()
+            campaignDao.deleteAll()
+            withContext(Dispatchers.Main) {
+                onComplete()
             }
         }
     }
@@ -219,134 +227,172 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
                 suppressionDao.insert(
                     SuppressionEntity(
                         phoneNumber = customer.phoneNumber,
-                        reason = "User toggled DND in contacts list"
-                    )
-                )
-                auditEventDao.insert(
-                    AuditEventEntity(
-                        eventType = "SUPPRESSION_ADDED",
-                        details = "Added ${customer.phoneNumber} to DND list"
+                        reason = "User toggled DND manually"
                     )
                 )
             } else {
                 suppressionDao.delete(customer.phoneNumber)
-                auditEventDao.insert(
-                    AuditEventEntity(
-                        eventType = "SUPPRESSION_REMOVED",
-                        details = "Removed ${customer.phoneNumber} from DND list"
-                    )
-                )
             }
         }
     }
 
-    fun toggleConsent(customer: CustomerEntity, consentGiven: Boolean) {
-        viewModelScope.launch(Dispatchers.IO) {
-            customerDao.updateConsentStatus(customer.id, consentGiven)
-            auditEventDao.insert(
-                AuditEventEntity(
-                    eventType = if (consentGiven) "WHATSAPP_CONSENT_RECORDED" else "WHATSAPP_CONSENT_WITHDRAWN",
-                    details = "WhatsApp consent for customer ${customer.id} set to $consentGiven"
-                )
-            )
-
-            if (!consentGiven) {
-                // Consent withdrawal must stop anything still waiting to send.
-                val pending = messageJobDao.getPendingJobsList("PENDING")
-                    .filter { it.customerId == customer.id }
-                pending.forEach { job ->
-                    messageJobDao.update(
-                        job.copy(
-                            status = "FAILED",
-                            lastError = "WhatsApp consent was withdrawn before dispatch",
-                            updatedAt = System.currentTimeMillis()
-                        )
-                    )
-                }
-            }
-        }
-    }
-
-    fun createCampaign(
+    /**
+     * Adds an individual lead into a specific section with phone number verification.
+     */
+    fun addIndividualLead(
+        sectionId: Long,
         name: String,
-        templateName: String?,
-        onCreated: (Long) -> Unit
+        phoneNumber: String,
+        company: String?,
+        notes: String?,
+        onResult: (Boolean, String) -> Unit
     ) {
         viewModelScope.launch(Dispatchers.IO) {
-            val eligibleCount = customerDao.getEligibleCustomers().size
-            val campaign = CampaignEntity(
-                name = name,
-                status = CampaignStatus.DRAFT.name,
-                totalContacts = eligibleCount,
-                completedContacts = 0,
-                messageTemplate = templateName,
-                createdAt = System.currentTimeMillis(),
-                updatedAt = System.currentTimeMillis()
+            val trimmedName = name.trim()
+            val trimmedPhone = phoneNumber.trim()
+
+            if (trimmedName.isBlank()) {
+                withContext(Dispatchers.Main) { onResult(false, "Lead name cannot be blank") }
+                return@launch
+            }
+
+            val verification = PhoneNumberUtils.verify(trimmedPhone, _defaultCountryCode.value)
+            if (!verification.isValid) {
+                withContext(Dispatchers.Main) {
+                    onResult(false, verification.issueReason ?: "Invalid phone number format")
+                }
+                return@launch
+            }
+
+            val normalized = verification.normalizedNumber
+            val existing = customerDao.getCustomersForSectionList(sectionId)
+            if (existing.any { it.phoneNumber == normalized }) {
+                withContext(Dispatchers.Main) {
+                    onResult(false, "Lead with number $normalized already exists in this section")
+                }
+                return@launch
+            }
+
+            val isSuppressed = suppressionDao.isSuppressed(normalized)
+            val newCustomer = CustomerEntity(
+                sectionId = sectionId,
+                name = trimmedName,
+                phoneNumber = normalized,
+                company = company?.trim()?.takeIf { it.isNotBlank() },
+                lastCallNotes = notes?.trim()?.takeIf { it.isNotBlank() },
+                callStatus = "NOT_CALLED",
+                isCleared = false,
+                isVerified = true,
+                isSuppressed = isSuppressed
             )
-            val id = campaignDao.insert(campaign)
-            auditEventDao.insert(
-                AuditEventEntity(
-                    eventType = "CAMPAIGN_CREATED",
-                    details = "Campaign '$name' created with $eligibleCount eligible contacts"
-                )
-            )
+
+            customerDao.insert(newCustomer)
+            val updatedList = customerDao.getCustomersForSectionList(sectionId)
+            val completedCount = updatedList.count { it.isCleared }
+            campaignDao.updateCounts(sectionId, updatedList.size, completedCount)
+
             withContext(Dispatchers.Main) {
-                onCreated(id)
+                onResult(true, "Lead '$trimmedName' added successfully!")
             }
         }
     }
 
-    fun seedDemoContacts(onComplete: (Int) -> Unit) {
+    /**
+     * Deletes an individual lead from a section.
+     */
+    fun deleteIndividualLead(lead: CustomerEntity, onComplete: () -> Unit) {
         viewModelScope.launch(Dispatchers.IO) {
-            val sampleContacts = listOf(
-                CustomerEntity(name = "Rahul Sharma", phoneNumber = "+919876543210", company = "Apex Retail", tags = "Sample, Retail"),
-                CustomerEntity(name = "Priya Patel", phoneNumber = "+919876543211", company = "Zenith Logistics", tags = "Sample, Logistics"),
-                CustomerEntity(name = "Anand Verma", phoneNumber = "+919876543212", company = "Quantum Tech", tags = "Sample, Tech"),
-                CustomerEntity(name = "Sneha Kulkarni", phoneNumber = "+919876543213", company = "Horizon Media", tags = "Sample, Media", isSuppressed = true),
-                CustomerEntity(name = "Vikram Rao", phoneNumber = "+919876543214", company = "Apex Solar", tags = "Sample, Solar")
-            )
-            customerDao.insertAll(sampleContacts)
-            suppressionDao.insert(
-                SuppressionEntity(phoneNumber = "+919876543213", reason = "DND opt-out sample")
-            )
-            auditEventDao.insert(
-                AuditEventEntity(
-                    eventType = "SAMPLE_CONTACTS_SEEDED",
-                    details = "Seeded 5 sample contacts for safe evaluation"
-                )
-            )
-            withContext(Dispatchers.Main) {
-                onComplete(sampleContacts.size)
-            }
-        }
-    }
-
-    fun clearAllContacts(onComplete: () -> Unit) {
-        viewModelScope.launch(Dispatchers.IO) {
-            customerDao.deleteAll()
+            customerDao.deleteCustomerById(lead.id)
+            val updatedList = customerDao.getCustomersForSectionList(lead.sectionId)
+            val completedCount = updatedList.count { it.isCleared }
+            campaignDao.updateCounts(lead.sectionId, updatedList.size, completedCount)
             withContext(Dispatchers.Main) {
                 onComplete()
             }
         }
     }
 
-    fun resolveOutcome(
-        attemptId: Long,
-        customer: CustomerEntity,
-        outcome: CallOutcome,
-        sendWhatsApp: Boolean,
-        notes: String? = null
-    ) {
-        engine.resolveOutcomeAndProceed(
-            attemptId = attemptId,
-            customer = customer,
-            outcome = outcome,
-            sendFollowUp = sendWhatsApp,
-            notes = notes
-        )
+    /**
+     * Creates a proper formatted CSV/Excel spreadsheet file and shares it via Intent with FileProvider.
+     */
+    fun shareSectionCsvAsFile(context: Context, section: CampaignEntity) {
+        viewModelScope.launch(Dispatchers.IO) {
+            try {
+                val leads = customerDao.getCustomersForSectionList(section.id)
+
+                val sb = StringBuilder()
+                sb.append("Lead Name,Phone Number,Call Status,Duration,Notes\n")
+
+                for (c in leads) {
+                    val durationFmt = formatDuration(c.lastCallDurationSeconds)
+                    val leadName = c.name.replace("\"", "\"\"")
+                    val leadPhone = c.phoneNumber.replace("\"", "\"\"")
+                    val leadStatus = c.callStatus.replace("\"", "\"\"")
+                    val leadNotes = (c.lastCallNotes ?: "").replace("\"", "\"\"")
+
+                    sb.append("\"$leadName\",\"$leadPhone\",\"$leadStatus\",\"$durationFmt\",\"$leadNotes\"\n")
+                }
+
+                val exportDir = File(context.cacheDir, "exports").apply { mkdirs() }
+                val cleanFileName = section.name.replace(Regex("[^a-zA-Z0-9_-]"), "_")
+                val file = File(exportDir, "${cleanFileName}_Leads.csv")
+
+                file.writeText("\uFEFF" + sb.toString(), Charsets.UTF_8)
+
+                val contentUri = FileProvider.getUriForFile(
+                    context,
+                    "${context.packageName}.fileprovider",
+                    file
+                )
+
+                val sendIntent = Intent(Intent.ACTION_SEND).apply {
+                    type = "text/comma-separated-values"
+                    putExtra(Intent.EXTRA_STREAM, contentUri)
+                    putExtra(Intent.EXTRA_SUBJECT, "${section.name} - Leads Excel Export")
+                    putExtra(Intent.EXTRA_TEXT, "Exported ${leads.size} leads from ${section.name}")
+                    addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+                }
+
+                val chooser = Intent.createChooser(sendIntent, "Share Excel / CSV Sheet").apply {
+                    addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                }
+                withContext(Dispatchers.Main) {
+                    context.startActivity(chooser)
+                }
+            } catch (e: Exception) {
+                withContext(Dispatchers.Main) {
+                    Toast.makeText(context, "Export error: ${e.localizedMessage}", Toast.LENGTH_SHORT).show()
+                }
+            }
+        }
     }
 
-    fun dispatchMessageQueue(onResult: (sent: Int, failed: Int, unknown: Int) -> Unit) {
-        engine.dispatchPendingMessages(onResult)
+    /**
+     * Generates CSV report for a specific section.
+     */
+    suspend fun exportSectionCsv(sectionId: Long): String = withContext(Dispatchers.IO) {
+        val leads = customerDao.getCustomersForSectionList(sectionId)
+
+        val sb = StringBuilder()
+        sb.append("Lead Name,Phone Number,Call Status,Duration,Notes\n")
+
+        for (c in leads) {
+            val durationFmt = formatDuration(c.lastCallDurationSeconds)
+            val cleanNotes = (c.lastCallNotes ?: "").replace("\"", "\"\"")
+            val cleanName = c.name.replace("\"", "\"\"")
+            val cleanPhone = c.phoneNumber.replace("\"", "\"\"")
+            val cleanStatus = c.callStatus.replace("\"", "\"\"")
+            sb.append("\"$cleanName\",\"$cleanPhone\",\"$cleanStatus\",\"$durationFmt\",\"$cleanNotes\"\n")
+        }
+        sb.toString()
+    }
+
+    companion object {
+        fun formatDuration(seconds: Int): String {
+            if (seconds <= 0) return "0s"
+            val m = seconds / 60
+            val s = seconds % 60
+            return if (m > 0) "${m}m ${s}s" else "${s}s"
+        }
     }
 }

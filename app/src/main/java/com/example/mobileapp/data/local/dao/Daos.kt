@@ -9,7 +9,6 @@ import com.example.mobileapp.data.local.entities.AuditEventEntity
 import com.example.mobileapp.data.local.entities.CallAttemptEntity
 import com.example.mobileapp.data.local.entities.CampaignEntity
 import com.example.mobileapp.data.local.entities.CustomerEntity
-import com.example.mobileapp.data.local.entities.MessageJobEntity
 import com.example.mobileapp.data.local.entities.SuppressionEntity
 import kotlinx.coroutines.flow.Flow
 
@@ -18,11 +17,23 @@ interface CustomerDao {
     @Query("SELECT * FROM customers ORDER BY id DESC")
     fun getAllCustomers(): Flow<List<CustomerEntity>>
 
+    @Query("SELECT * FROM customers WHERE sectionId = :sectionId ORDER BY id ASC")
+    fun getCustomersForSection(sectionId: Long): Flow<List<CustomerEntity>>
+
+    @Query("SELECT * FROM customers WHERE sectionId = :sectionId ORDER BY id ASC")
+    suspend fun getCustomersForSectionList(sectionId: Long): List<CustomerEntity>
+
     @Query("SELECT * FROM customers WHERE isSuppressed = 0 ORDER BY id ASC")
     suspend fun getEligibleCustomers(): List<CustomerEntity>
 
-    @Query("SELECT COUNT(*) FROM customers")
-    fun getCustomerCountFlow(): Flow<Int>
+    @Query("SELECT * FROM customers WHERE sectionId = :sectionId AND isCleared = 0 AND isSuppressed = 0 ORDER BY id ASC")
+    fun getPendingCustomersFlow(sectionId: Long): Flow<List<CustomerEntity>>
+
+    @Query("SELECT * FROM customers WHERE sectionId = :sectionId AND isCleared = 1 ORDER BY lastCallTimestamp DESC")
+    fun getClearedCustomersFlow(sectionId: Long): Flow<List<CustomerEntity>>
+
+    @Query("SELECT COUNT(*) FROM customers WHERE sectionId = :sectionId")
+    fun getSectionLeadsCount(sectionId: Long): Flow<Int>
 
     @Query("SELECT phoneNumber FROM customers WHERE isSuppressed = 1")
     suspend fun getSuppressedCustomerNumbers(): List<String>
@@ -39,14 +50,20 @@ interface CustomerDao {
     @Insert(onConflict = OnConflictStrategy.REPLACE)
     suspend fun insertAll(customers: List<CustomerEntity>): List<Long>
 
-    @Update
+    @Update    
     suspend fun update(customer: CustomerEntity)
 
     @Query("UPDATE customers SET isSuppressed = :suppressed WHERE phoneNumber = :phoneNumber")
     suspend fun updateSuppressionStatus(phoneNumber: String, suppressed: Boolean)
 
-    @Query("UPDATE customers SET consentGiven = :consent WHERE id = :id")
-    suspend fun updateConsentStatus(id: Long, consent: Boolean)
+    @Query("UPDATE customers SET callStatus = :status, lastCallDurationSeconds = :duration, lastCallNotes = :notes, lastCallTimestamp = :timestamp, isCleared = :isCleared WHERE id = :customerId")
+    suspend fun updateCallOutcome(customerId: Long, status: String, duration: Int, notes: String?, timestamp: Long, isCleared: Boolean)
+
+    @Query("DELETE FROM customers WHERE id = :id")
+    suspend fun deleteCustomerById(id: Long)
+
+    @Query("DELETE FROM customers WHERE sectionId = :sectionId")
+    suspend fun deleteCustomersBySection(sectionId: Long)
 
     @Query("DELETE FROM customers")
     suspend fun deleteAll()
@@ -60,21 +77,33 @@ interface CampaignDao {
     @Query("SELECT * FROM campaigns WHERE id = :id LIMIT 1")
     suspend fun getCampaignById(id: Long): CampaignEntity?
 
-    @Query("SELECT * FROM campaigns WHERE status IN ('RUNNING', 'PAUSED') ORDER BY updatedAt DESC LIMIT 1")
+    @Query("SELECT * FROM campaigns WHERE status IN ('RUNNING', 'PAUSED') ORDER BY createdAt DESC LIMIT 1")
     suspend fun getActiveCampaign(): CampaignEntity?
-
-    @Query("SELECT * FROM campaigns WHERE status IN ('RUNNING', 'PAUSED') ORDER BY updatedAt DESC LIMIT 1")
-    fun getActiveCampaignFlow(): Flow<CampaignEntity?>
 
     @Insert(onConflict = OnConflictStrategy.REPLACE)
     suspend fun insert(campaign: CampaignEntity): Long
 
     @Update
     suspend fun update(campaign: CampaignEntity)
+
+    @Query("UPDATE campaigns SET totalContacts = :total, completedContacts = :completed WHERE id = :id")
+    suspend fun updateCounts(id: Long, total: Int, completed: Int)
+
+    @Query("DELETE FROM campaigns WHERE id = :id")
+    suspend fun deleteCampaign(id: Long)
+
+    @Query("DELETE FROM campaigns")
+    suspend fun deleteAll()
 }
 
 @Dao
 interface CallAttemptDao {
+    @Query("SELECT * FROM call_attempts ORDER BY timestamp DESC")
+    fun getAllHistory(): Flow<List<CallAttemptEntity>>
+
+    @Query("SELECT * FROM call_attempts WHERE campaignId = :sectionId ORDER BY timestamp DESC")
+    fun getAttemptsForSection(sectionId: Long): Flow<List<CallAttemptEntity>>
+
     @Query("SELECT * FROM call_attempts WHERE campaignId = :campaignId ORDER BY timestamp DESC")
     fun getAttemptsForCampaign(campaignId: Long): Flow<List<CallAttemptEntity>>
 
@@ -93,29 +122,14 @@ interface CallAttemptDao {
     @Update
     suspend fun update(attempt: CallAttemptEntity)
 
-    @Query("UPDATE call_attempts SET outcome = :outcome, notes = :notes, followUpEligible = :followUpEligible, callEndTime = :endTime, durationSeconds = :duration WHERE id = :attemptId")
-    suspend fun updateOutcome(attemptId: Long, outcome: String, notes: String?, followUpEligible: Boolean, endTime: Long, duration: Int)
-}
+    @Query("UPDATE call_attempts SET outcome = :outcome, notes = :notes, callEndTime = :endTime, durationSeconds = :duration WHERE id = :attemptId")
+    suspend fun updateOutcome(attemptId: Long, outcome: String, notes: String?, endTime: Long, duration: Int)
 
-@Dao
-interface MessageJobDao {
-    @Query("SELECT * FROM message_jobs ORDER BY createdAt DESC")
-    fun getAllJobsFlow(): Flow<List<MessageJobEntity>>
+    @Query("DELETE FROM call_attempts WHERE campaignId = :sectionId")
+    suspend fun deleteAttemptsBySection(sectionId: Long)
 
-    @Query("SELECT * FROM message_jobs WHERE status = :status ORDER BY createdAt ASC")
-    fun getJobsByStatus(status: String): Flow<List<MessageJobEntity>>
-
-    @Query("SELECT * FROM message_jobs WHERE status = :status ORDER BY createdAt ASC")
-    suspend fun getPendingJobsList(status: String = "PENDING"): List<MessageJobEntity>
-
-    @Query("SELECT * FROM message_jobs WHERE jobId = :jobId LIMIT 1")
-    suspend fun getJobByJobId(jobId: String): MessageJobEntity?
-
-    @Insert(onConflict = OnConflictStrategy.IGNORE)
-    suspend fun insert(job: MessageJobEntity): Long
-
-    @Update
-    suspend fun update(job: MessageJobEntity)
+    @Query("DELETE FROM call_attempts")
+    suspend fun clearAllHistory()
 }
 
 @Dao

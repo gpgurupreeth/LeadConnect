@@ -16,12 +16,10 @@ import com.example.mobileapp.telecom.ICaller
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
-import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
-import kotlinx.coroutines.withContext
 
 sealed class EngineExecutionState {
     object Idle : EngineExecutionState()
@@ -38,8 +36,7 @@ data class CampaignEngineStats(
     val callsAttempted: Int = 0,
     val callsAnswered: Int = 0,
     val callsUnresolved: Int = 0,
-    val callsSuppressed: Int = 0,
-    val messagesQueued: Int = 0
+    val callsSuppressed: Int = 0
 )
 
 class CampaignEngine(
@@ -50,19 +47,16 @@ class CampaignEngine(
     private val customerDao = database.customerDao()
     private val campaignDao = database.campaignDao()
     private val callAttemptDao = database.callAttemptDao()
-    private val messageJobDao = database.messageJobDao()
     private val suppressionDao = database.suppressionDao()
     private val auditEventDao = database.auditEventDao()
 
-    private val realCaller = AndroidTelecomCaller(context)
+    val realCaller = AndroidTelecomCaller(context)
     val demoCaller = DemoSimCaller()
 
     // Configurable Settings
     var isDemoMode = false
     var callingHoursConfig = CallingHoursConfig()
     var defaultCountryCode = "+91"
-
-    val backendProxyClient = com.example.mobileapp.messaging.BackendProxyClient()
 
     private val _engineState = MutableStateFlow<EngineExecutionState>(EngineExecutionState.Idle)
     val engineState: StateFlow<EngineExecutionState> = _engineState.asStateFlow()
@@ -98,7 +92,6 @@ class CampaignEngine(
         return SequentialCallCoordinator(
             caller = getActiveCaller(),
             callAttemptDao = callAttemptDao,
-            messageJobDao = messageJobDao,
             suppressionDao = suppressionDao,
             auditEventDao = auditEventDao
         )
@@ -244,13 +237,11 @@ class CampaignEngine(
 
             val stepResult = coordinator!!.processCustomerCall(
                 campaignId = campaignId,
-                customer = nextCustomer,
-                templateName = campaign.messageTemplate
+                customer = nextCustomer
             )
 
             when (stepResult) {
                 is CallStepResult.AwaitingConfirmation -> {
-                    // Update attempted count
                     _engineStats.value = _engineStats.value.copy(
                         callsAttempted = _engineStats.value.callsAttempted + 1
                     )
@@ -268,7 +259,7 @@ class CampaignEngine(
                     )
                 }
                 is CallStepResult.SkippedAlreadyAttempted -> {
-                    // Invariant check: skip and continue loop
+                    // Skip and continue loop
                 }
                 is CallStepResult.Failed -> {
                     // Failed to dial (e.g. permission or telephony error)
@@ -284,97 +275,49 @@ class CampaignEngine(
 
     /**
      * Called when the agent completes the manual outcome confirmation dialog.
-     * Persists outcome, optionally queues WhatsApp follow-up, updates counters,
-     * and automatically resumes the campaign loop for the next contact!
+     * Persists outcome, updates counters, and automatically resumes the campaign loop for the next contact!
      */
     fun resolveOutcomeAndProceed(
         attemptId: Long,
         customer: CustomerEntity,
         outcome: CallOutcome,
-        sendFollowUp: Boolean,
         notes: String? = null
     ) {
         scope.launch(Dispatchers.IO) {
             val campaign = _currentCampaign.value ?: return@launch
             coordinator = getCoordinator()
 
-            val stepResult = coordinator!!.confirmOutcomeAndQueueFollowUp(
+            val observation = if (isDemoMode) null else realCaller.finishCurrentCallObservation()
+            val duration = observation?.durationSeconds ?: 0
+
+            coordinator!!.confirmOutcome(
                 attemptId = attemptId,
-                campaignId = campaign.id,
-                customerId = customer.id,
-                phoneNumber = customer.phoneNumber,
                 confirmedOutcome = outcome,
-                followUpEligible = sendFollowUp,
-                consentGiven = customer.consentGiven,
-                templateName = if (sendFollowUp) campaign.messageTemplate else null
-            )
-            val messageQueued = (stepResult as? CallStepResult.Completed)?.messageQueued == true
-
-            // Update stats. A message is counted only when the explicit policy
-            // actually queued it, not merely because a call ended.
-            val isAnswered = outcome == CallOutcome.ANSWERED
-            _engineStats.value = _engineStats.value.copy(
-                callsAnswered = _engineStats.value.callsAnswered + (if (isAnswered) 1 else 0),
-                callsUnresolved = _engineStats.value.callsUnresolved + (if (!isAnswered) 1 else 0),
-                messagesQueued = _engineStats.value.messagesQueued + (if (messageQueued) 1 else 0)
+                notes = notes,
+                durationSeconds = duration
             )
 
-            // Update completed count in campaign entity
-            val currentCompleted = campaign.completedContacts + 1
-            val updated = campaign.copy(
-                completedContacts = currentCompleted,
+            val currentStats = _engineStats.value
+            val updatedStats = when (outcome) {
+                CallOutcome.ANSWERED -> currentStats.copy(callsAnswered = currentStats.callsAnswered + 1)
+                else -> currentStats.copy(callsUnresolved = currentStats.callsUnresolved + 1)
+            }
+            _engineStats.value = updatedStats
+
+            val completedCount = campaign.completedContacts + 1
+            val updatedCampaign = campaign.copy(
+                completedContacts = completedCount,
                 updatedAt = System.currentTimeMillis()
             )
-            campaignDao.update(updated)
-            _currentCampaign.value = updated
+            campaignDao.update(updatedCampaign)
+            _currentCampaign.value = updatedCampaign
 
-            // Brief pacing pause (1.5 seconds) for safety before auto-dialing next contact
-            _engineState.value = EngineExecutionState.Running
-            delay(1500)
-
-            // Continue campaign loop if still running
-            val freshCampaign = campaignDao.getCampaignById(campaign.id)
-            if (freshCampaign != null && freshCampaign.status == CampaignStatus.RUNNING.name) {
-                runCampaignLoop(campaign.id)
-            }
+            // Automatically proceed to next lead in the campaign
+            runCampaignLoop(campaign.id)
         }
-    }
-
-    /**
-     * Asynchronously dispatches all pending WhatsApp messages using the isolated provider.
-     */
-    fun dispatchPendingMessages(onComplete: (sent: Int, failed: Int, unknown: Int) -> Unit) {
-        scope.launch(Dispatchers.IO) {
-            coordinator = getCoordinator()
-            // Only PENDING jobs are eligible. SENDING, UNKNOWN, FAILED, and SENT
-            // jobs are deliberately excluded from automatic dispatch.
-            val pendingJobs = messageJobDao.getPendingJobsList("PENDING")
-            var sent = 0
-            var failed = 0
-            var unknown = 0
-
-            for (job in pendingJobs) {
-                val result = coordinator!!.dispatchPendingMessageJob(job.jobId, backendProxyClient)
-                when (result) {
-                    is com.example.mobileapp.domain.workflow.MessageDispatchResult.Sent -> sent++
-                    is com.example.mobileapp.domain.workflow.MessageDispatchResult.Unknown -> unknown++
-                    else -> failed++
-                }
-            }
-
-            withContext(Dispatchers.Main) {
-                onComplete(sent, failed, unknown)
-            }
-        }
-    }
-
-    suspend fun verifyBackendProxy(): com.example.mobileapp.messaging.ProxyContractStatus {
-        return backendProxyClient.verifyContract()
     }
 
     private suspend fun refreshStats(campaignId: Long) {
-        val attempts = callAttemptDao.getLatestAttemptForCustomer(campaignId, 0)
-        // Set initial stats based on campaign entity
         val campaign = campaignDao.getCampaignById(campaignId)
         if (campaign != null) {
             _engineStats.value = CampaignEngineStats(

@@ -4,15 +4,12 @@ import com.example.mobileapp.data.local.entities.AuditEventEntity
 import com.example.mobileapp.data.local.entities.CallAttemptEntity
 import com.example.mobileapp.data.local.entities.CampaignEntity
 import com.example.mobileapp.data.local.entities.CustomerEntity
-import com.example.mobileapp.data.local.entities.MessageJobEntity
 import com.example.mobileapp.data.local.entities.SuppressionEntity
 import com.example.mobileapp.domain.model.CallOutcome
 import com.example.mobileapp.domain.model.CampaignStatus
-import com.example.mobileapp.domain.model.MessageStatus
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotNull
-import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
@@ -33,7 +30,6 @@ class DatabaseEntitiesTest {
         assertEquals("+919876543210", customer.phoneNumber)
         assertEquals("Acme Corp", customer.company)
         assertFalse(customer.isSuppressed)
-        assertFalse(customer.consentGiven)
     }
 
     @Test
@@ -44,7 +40,7 @@ class DatabaseEntitiesTest {
             status = CampaignStatus.RUNNING.name,
             totalContacts = 100,
             completedContacts = 15,
-            messageTemplate = "welcome_followup"
+            description = "Sales calling campaign"
         )
         assertEquals(10L, campaign.id)
         assertEquals("Q4 Outreach", campaign.name)
@@ -63,31 +59,10 @@ class DatabaseEntitiesTest {
             callEndTime = System.currentTimeMillis(),
             durationSeconds = 30,
             outcome = CallOutcome.UNKNOWN.name,
-            notes = "Agent confirmation pending",
-            followUpEligible = false
+            notes = "Agent confirmation pending"
         )
         assertEquals(CallOutcome.UNKNOWN.name, attempt.outcome)
-        assertFalse(attempt.followUpEligible)
-    }
-
-    @Test
-    fun `test MessageJobEntity idempotency and pending status`() {
-        val job = MessageJobEntity(
-            id = 501L,
-            jobId = "deterministic_sha256_hash",
-            campaignId = 10L,
-            customerId = 1L,
-            phoneNumber = "+919876543210",
-            templateName = "welcome_template",
-            parametersJson = """{"name":"Test Lead"}""",
-            status = MessageStatus.PENDING.name,
-            retryCount = 0
-        )
-        assertEquals("deterministic_sha256_hash", job.jobId)
-        assertEquals(MessageStatus.PENDING.name, job.status)
-        assertEquals(0, job.retryCount)
-        assertFalse(job.consentVerified)
-        assertNull(job.providerMessageId)
+        assertEquals(30, attempt.durationSeconds)
     }
 
     @Test

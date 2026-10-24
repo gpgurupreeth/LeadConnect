@@ -111,8 +111,9 @@ object ContactImportParser {
                 }
             }
 
-            val normalized = PhoneNumberUtils.normalize(rawPhone, defaultCountryCode)
-            val isValid = PhoneNumberUtils.isValid(normalized)
+            val verification = PhoneNumberUtils.verify(rawPhone, defaultCountryCode)
+            val normalized = verification.normalizedNumber
+            val isValid = verification.isValid
 
             if (!isValid) {
                 parsedList.add(
@@ -124,7 +125,7 @@ object ContactImportParser {
                         isValid = false,
                         isDuplicate = false,
                         isSuppressed = false,
-                        validationError = "Invalid phone format: must be valid E.164 number (e.g. +919876543210)"
+                        validationError = verification.issueReason ?: "Invalid phone number format"
                     )
                 )
                 continue

@@ -1,87 +1,29 @@
-# Configuration Design
+# Configuration & Calling Policies Design
 
 ## Purpose
-Define the runtime configuration file (`config.json`) stored in the app‑private `filesDir`. It controls policy flags, retry behavior, and opt‑out handling without requiring a new app build.
+LeadConnect manages local-first operational settings and policies directly inside the application, governing dialing parameters, permitted calling hours windows, and Do-Not-Call (DND) suppression.
 
-## File Location & Format
-* **Path:** `context.filesDir/config.json`
-* **Format:** JSON (pretty‑printed).
+---
 
-```json
-{
-  "followUpPolicy": {
-    "eligibleOutcomes": ["NO_ANSWER", "REJECTED"],
-    "allowBusy": false,
-    "allowFailed": false
-  },
-  "retryPolicy": {
-    "maxAttempts": 3,
-    "initialBackoffMs": 2000,
-    "backoffMultiplier": 2.0
-  },
-  "optOut": {
-    "enabled": true,
-    "storage": "suppression_table"
-  },
-  "testCallNumber": "+18005551234",
-  "logLevel": "INFO"
-}
-```
+## Operational Settings
 
-## Fields Explanation
-| Field | Description | Allowed Values |
-|-------|-------------|----------------|
-| `followUpPolicy.eligibleOutcomes` | Outcomes that trigger a WhatsApp follow‑up. Must match the `CallOutcome` enum. | Array of strings (`ANSWERED`, `NO_ANSWER`, `REJECTED`, `BUSY`, `FAILED`, `UNKNOWN`). |
-| `followUpPolicy.allowBusy` / `allowFailed` | Additional outcomes that may be enabled by a business decision. | Boolean |
-| `retryPolicy.maxAttempts` | Maximum number of submission attempts for a `MessageJob`. | Integer ≥ 1 |
-| `retryPolicy.initialBackoffMs` | Wait time before first retry (ms). | Positive integer |
-| `retryPolicy.backoffMultiplier` | Exponential back‑off factor. | Float > 1 |
-| `optOut.enabled` | Whether the opt‑out list is enforced. | Boolean |
-| `optOut.storage` | Where opt‑out entries are persisted. Currently only `suppression_table` is supported. |
-| `testCallNumber` | Default number used by the Diagnostics screen for the test call. | E.164 formatted string |
-| `logLevel` | Verbosity of internal logging. | `DEBUG`, `INFO`, `WARN`, `ERROR` |
+| Setting | Purpose | Default Value | Configurable In |
+| :--- | :--- | :--- | :--- |
+| **Calling Mode** | Switches between `Safe Demo Mode` (simulated calls) and `Live SIM Mode` (real carrier calls). | `Safe Demo Mode` | Dashboard / Settings Screen |
+| **Permitted Calling Hours Window** | Restricts outbound campaign dialing to allowable business hours (e.g. 09:00 to 18:00) to prevent late-night calling. | `09:00 – 18:00` | Settings Screen |
+| **Enforce Calling Hours** | If enabled, the campaign runner automatically pauses and logs when an attempt falls outside hours. | `true` | Settings Screen |
+| **Default Country Code** | Automatically prefixes raw numbers without international codes. | `+91` | Settings Screen |
+| **DND Suppression Enforcement** | Cross-checks phone numbers against the local suppression table prior to any dialing. | `Always Enforced` | System Invariant |
 
-## Loading & Validation
-```kotlin
-class ConfigProvider @Inject constructor(@ApplicationContext private val ctx: Context) {
-    private val configFile = File(ctx.filesDir, "config.json")
-    private val gson = Gson()
-    lateinit var config: Config
-        private set
+---
 
-    fun load() {
-        if (!configFile.exists()) writeDefault()
-        config = gson.fromJson(configFile.readText(), Config::class.java)
-        validate()
-    }
+## Safety & Invariant Guarantees
 
-    private fun writeDefault() {
-        configFile.writeText(gson.toJson(defaultConfig()))
-    }
-
-    private fun validate() {
-        // ensure eligibleOutcomes contain only known enums, backoff values are positive, etc.
-    }
-}
-```
-`Config` is a data class mirroring the JSON structure.
-
-## Runtime Usage Examples
-* **Message Scheduler** reads `retryPolicy` to configure WorkManager back‑off settings.
-* **Follow‑Up Policy** is consulted by `MessagingEngine` before creating a `MessageJob`.
-* **Opt‑Out** check is performed in `MessageJobRepository` before enqueuing a job.
-
-## Updating Configuration
-* The app includes a **Settings** screen where advanced users can edit the JSON (via a text editor view) and press **Save**.
-* Changes take effect immediately after `ConfigProvider.load()` is called (e.g., on app resume).
-
-## Acceptance Criteria
-1. `config.json` is created on first launch with the default content shown above.
-2. Changing `followUpPolicy.eligibleOutcomes` instantly alters which call outcomes generate a follow‑up.
-3. Invalid JSON or out‑of‑range values cause the app to revert to defaults and log a warning.
-4. Unit tests verify loading, default creation, and validation logic (`ConfigProviderTest`).
-
-## References
-* PRD Section **FR‑05** – Call Outcome Classification.
-* PRD Section **FR‑07** – Follow‑Up Message policy.
-* NFR‑Security – Configuration file lives in internal storage, not exposed to other apps.
+1. **Sequential Dialing**:
+   - Only one lead is dialed at a time. The engine halts until the current call ends and its outcome is verified.
+2. **Pre-Dial DND Suppression**:
+   - Numbers marked in the local suppression list are strictly skipped with audit logging.
+3. **Crash Recovery Protection**:
+   - If the application or device crashes while a campaign is running, contacts with initiated attempts in that campaign are marked and **never redialed**.
+4. **Agent Outcome Verification**:
+   - Call outcomes (`ANSWERED`, `BUSY`, `NO_ANSWER`, `REJECTED`, `UNKNOWN`) are recorded with user confirmation and optional notes before advancing.

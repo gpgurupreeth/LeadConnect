@@ -6,20 +6,23 @@ import androidx.room.PrimaryKey
 
 @Entity(
     tableName = "customers",
-    indices = [Index(value = ["phoneNumber"], unique = true)]
+    indices = [Index(value = ["sectionId", "phoneNumber"], unique = true)]
 )
 data class CustomerEntity(
     @PrimaryKey(autoGenerate = true)
     val id: Long = 0,
+    val sectionId: Long = 0L, // Belongs to a specific Section / CSV List
     val name: String,
     val phoneNumber: String,
     val company: String? = null,
     val tags: String? = null,
     val isSuppressed: Boolean = false,
-    // Explicit opt-in proof for WhatsApp follow-ups. Defaults to false so a
-    // newly imported contact can never receive a message until an agent
-    // records consent and a campaign is explicitly run.
-    val consentGiven: Boolean = false,
+    val callStatus: String = "NOT_CALLED", // NOT_CALLED, INTERESTED, CALLBACK, NO_ANSWER, NOT_INTERESTED
+    val lastCallDurationSeconds: Int = 0,
+    val lastCallNotes: String? = null,
+    val lastCallTimestamp: Long? = null,
+    val isCleared: Boolean = false,
+    val isVerified: Boolean = true,
     val createdAt: Long = System.currentTimeMillis()
 )
 
@@ -27,11 +30,12 @@ data class CustomerEntity(
 data class CampaignEntity(
     @PrimaryKey(autoGenerate = true)
     val id: Long = 0,
-    val name: String,
-    val status: String,
+    val name: String, // Section Name (e.g. "Real Estate Oct 24", "Doctors List")
+    val genre: String? = null, // e.g. "Real Estate", "B2B Tech"
+    val status: String = "ACTIVE",
     val totalContacts: Int = 0,
     val completedContacts: Int = 0,
-    val messageTemplate: String? = null,
+    val description: String? = null,
     val createdAt: Long = System.currentTimeMillis(),
     val updatedAt: Long = System.currentTimeMillis()
 )
@@ -43,42 +47,16 @@ data class CampaignEntity(
 data class CallAttemptEntity(
     @PrimaryKey(autoGenerate = true)
     val id: Long = 0,
-    val campaignId: Long,
-    val customerId: Long,
+    val campaignId: Long = 0L, // Matches sectionId
+    val customerId: Long = 0L,
     val phoneNumber: String,
-    val callStartTime: Long,
+    val contactName: String = "",
+    val callStartTime: Long = System.currentTimeMillis(),
     val callEndTime: Long? = null,
     val durationSeconds: Int = 0,
-    val outcome: String,
+    val outcome: String, // INTERESTED, CALLBACK, NO_ANSWER, NOT_INTERESTED
     val notes: String? = null,
-    val followUpEligible: Boolean = false,
     val timestamp: Long = System.currentTimeMillis()
-)
-
-@Entity(
-    tableName = "message_jobs",
-    indices = [Index(value = ["jobId"], unique = true), Index(value = ["status"])]
-)
-data class MessageJobEntity(
-    @PrimaryKey(autoGenerate = true)
-    val id: Long = 0,
-    val jobId: String,
-    val campaignId: Long,
-    val customerId: Long,
-    val phoneNumber: String,
-    val templateName: String,
-    val parametersJson: String,
-    val status: String,
-    val retryCount: Int = 0,
-    val nextRetryTime: Long? = null,
-    val lastError: String? = null,
-    // Consent was verified when the job was queued and is re-checked at
-    // dispatch. A job without this proof cannot be sent.
-    val consentVerified: Boolean = false,
-    // Nullable: WAHA may accept a send without returning a provider message ID.
-    val providerMessageId: String? = null,
-    val createdAt: Long = System.currentTimeMillis(),
-    val updatedAt: Long = System.currentTimeMillis()
 )
 
 @Entity(tableName = "audit_events")
