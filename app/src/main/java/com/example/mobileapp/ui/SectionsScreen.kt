@@ -27,6 +27,7 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.List
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.Delete
+import androidx.compose.material.icons.filled.Done
 import androidx.compose.material.icons.filled.Phone
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
@@ -41,10 +42,14 @@ import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
+import androidx.compose.foundation.layout.PaddingValues
+import androidx.compose.material3.Checkbox
+import androidx.compose.material3.CheckboxDefaults
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
+import androidx.compose.runtime.mutableStateListOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
@@ -81,108 +86,54 @@ fun SectionsScreen(
 
     var homeTab by remember { mutableIntStateOf(0) } // 0: Sections, 1: Global Call History
     var showCreateDialog by remember { mutableStateOf(false) }
-    var showDeleteAllDialog by remember { mutableStateOf(false) }
     var sectionToDelete by remember { mutableStateOf<CampaignEntity?>(null) }
+    var isSelectMode by remember { mutableStateOf(false) }
+    val selectedSectionIds = remember { mutableStateListOf<Long>() }
+    var showDeleteSelectedDialog by remember { mutableStateOf(false) }
 
     Column(
         modifier = Modifier
             .fillMaxSize()
-            .padding(horizontal = AppSpacing.lg, vertical = AppSpacing.sm)
+            .padding(horizontal = 16.dp, vertical = 12.dp)
     ) {
-        // 1. Top Executive Floating Header Card
-        Card(
-            modifier = Modifier.fillMaxWidth(),
-            shape = RoundedCornerShape(20.dp),
-            colors = CardDefaults.cardColors(containerColor = Color.White),
-            border = BorderStroke(1.dp, Color(0xFFF0EBE1)),
-            elevation = CardDefaults.cardElevation(defaultElevation = 2.dp)
+        // 1. Top Minimalist Header Row (Matching Dribbble layout)
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(vertical = 8.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.SpaceBetween
         ) {
-            Row(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(horizontal = 14.dp, vertical = 12.dp),
-                verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.SpaceBetween
+            Column {
+                Text(
+                    text = "LeadConnect",
+                    fontSize = 28.sp,
+                    fontWeight = FontWeight.Black,
+                    letterSpacing = (-0.6).sp,
+                    color = Color(0xFF09090B)
+                )
+                Text(
+                    text = "Sales Calling Automation",
+                    fontSize = 12.5.sp,
+                    fontWeight = FontWeight.Medium,
+                    color = Color(0xFF71717A)
+                )
+            }
+
+            // Dribbble-style Circular + Button
+            Surface(
+                onClick = { showCreateDialog = true },
+                shape = CircleShape,
+                color = AppStatusColors.brandBlue,
+                modifier = Modifier.size(42.dp)
             ) {
-                Row(
-                    verticalAlignment = Alignment.CenterVertically,
-                    modifier = Modifier.weight(1f)
-                ) {
-                    // Glowing Icon Container
-                    Surface(
-                        shape = RoundedCornerShape(14.dp),
-                        color = Color(0xFFFEF3C7),
-                        modifier = Modifier.size(44.dp)
-                    ) {
-                        Box(contentAlignment = Alignment.Center) {
-                            Text(text = "⚡", fontSize = 22.sp)
-                        }
-                    }
-
-                    Spacer(modifier = Modifier.width(10.dp))
-
-                    Column {
-                        Text(
-                            text = "LeadConnect Pro",
-                            fontSize = 18.sp,
-                            fontWeight = FontWeight.Black,
-                            letterSpacing = (-0.5).sp,
-                            color = Color(0xFF0A0A0A)
-                        )
-                        Text(
-                            text = "Executive Calling & Multi-Genre Manager",
-                            fontSize = 11.sp,
-                            fontWeight = FontWeight.Normal,
-                            color = Color(0xFF6B7280)
-                        )
-                    }
-                }
-
-                Row(
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.spacedBy(8.dp)
-                ) {
-                    // Soft Red Square Delete All Button
-                    if (sections.isNotEmpty()) {
-                        Surface(
-                            onClick = { showDeleteAllDialog = true },
-                            shape = RoundedCornerShape(12.dp),
-                            color = Color(0xFFFEE2E2),
-                            modifier = Modifier.size(38.dp)
-                        ) {
-                            Box(contentAlignment = Alignment.Center) {
-                                Icon(
-                                    imageVector = Icons.Default.Delete,
-                                    contentDescription = "Delete All",
-                                    tint = Color(0xFFDC2626),
-                                    modifier = Modifier.size(18.dp)
-                                )
-                            }
-                        }
-                    }
-
-                    // Vibrant Orange + Import CSV Button
-                    Button(
-                        onClick = { showCreateDialog = true },
-                        colors = ButtonDefaults.buttonColors(containerColor = Color(0xFFEA580C)),
-                        shape = RoundedCornerShape(12.dp),
-                        elevation = ButtonDefaults.buttonElevation(defaultElevation = 2.dp),
-                        modifier = Modifier.height(38.dp)
-                    ) {
-                        Icon(
-                            imageVector = Icons.Default.Add,
-                            contentDescription = "Add",
-                            modifier = Modifier.size(16.dp),
-                            tint = Color.White
-                        )
-                        Spacer(modifier = Modifier.width(4.dp))
-                        Text(
-                            text = "Import CSV",
-                            fontSize = 12.sp,
-                            fontWeight = FontWeight.Bold,
-                            color = Color.White
-                        )
-                    }
+                Box(contentAlignment = Alignment.Center) {
+                    Icon(
+                        imageVector = Icons.Default.Add,
+                        contentDescription = "Import CSV",
+                        tint = Color.White,
+                        modifier = Modifier.size(20.dp)
+                    )
                 }
             }
         }
@@ -196,10 +147,13 @@ fun SectionsScreen(
                 TabItem(title = "All Call History", count = allHistory.size, iconPrefix = "📜")
             ),
             selectedIndex = homeTab,
-            onTabSelected = { homeTab = it }
+            onTabSelected = {
+                homeTab = it
+                if (it != 0) isSelectMode = false
+            }
         )
 
-        Spacer(modifier = Modifier.height(12.dp))
+        Spacer(modifier = Modifier.height(10.dp))
 
         // 3. Tab Body
         Box(modifier = Modifier.fillMaxSize()) {
@@ -223,14 +177,14 @@ fun SectionsScreen(
                         ) {
                             Surface(
                                 shape = CircleShape,
-                                color = Color(0xFFFFEDD5),
+                                color = AppStatusColors.brandBlueLight,
                                 modifier = Modifier.size(64.dp)
                             ) {
                                 Box(contentAlignment = Alignment.Center) {
                                     Icon(
                                         imageVector = Icons.AutoMirrored.Filled.List,
                                         contentDescription = "List",
-                                        tint = Color(0xFFEA580C),
+                                        tint = AppStatusColors.brandBlue,
                                         modifier = Modifier.size(32.dp)
                                     )
                                 }
@@ -252,7 +206,7 @@ fun SectionsScreen(
                             Spacer(modifier = Modifier.height(AppSpacing.lg))
                             Button(
                                 onClick = { showCreateDialog = true },
-                                colors = ButtonDefaults.buttonColors(containerColor = Color(0xFFEA580C)),
+                                colors = ButtonDefaults.buttonColors(containerColor = AppStatusColors.brandBlue),
                                 shape = RoundedCornerShape(12.dp)
                             ) {
                                 Icon(Icons.Default.Add, contentDescription = null, modifier = Modifier.size(16.dp))
@@ -262,19 +216,153 @@ fun SectionsScreen(
                         }
                     }
                 } else {
-                    LazyColumn(
-                        modifier = Modifier.fillMaxSize(),
-                        verticalArrangement = Arrangement.spacedBy(10.dp)
-                    ) {
-                        items(sections, key = { it.id }) { section ->
-                            SectionCard(
-                                section = section,
-                                onClick = { onOpenSection(section) },
-                                onDelete = { sectionToDelete = section }
-                            )
+                    Column(modifier = Modifier.fillMaxSize()) {
+                        // Select & Delete Action Bar
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(bottom = 8.dp),
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            if (!isSelectMode) {
+                                Text(
+                                    text = "Your Lead Sections (${sections.size})",
+                                    fontSize = 12.sp,
+                                    fontWeight = FontWeight.Bold,
+                                    color = Color(0xFF374151)
+                                )
+
+                                Surface(
+                                    onClick = {
+                                        isSelectMode = true
+                                        selectedSectionIds.clear()
+                                    },
+                                    shape = RoundedCornerShape(10.dp),
+                                    color = Color(0xFFFFEDD5),
+                                    border = BorderStroke(1.dp, Color(0xFFFDBA74)),
+                                    modifier = Modifier.height(30.dp)
+                                ) {
+                                    Box(
+                                        contentAlignment = Alignment.Center,
+                                        modifier = Modifier.padding(horizontal = 10.dp)
+                                    ) {
+                                        Text(
+                                            text = "Select & Delete",
+                                            fontSize = 11.sp,
+                                            fontWeight = FontWeight.Bold,
+                                            color = Color(0xFFEA580C)
+                                        )
+                                    }
+                                }
+                            } else {
+                                // In selection mode
+                                Row(
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    horizontalArrangement = Arrangement.spacedBy(6.dp)
+                                ) {
+                                    val allSelected = selectedSectionIds.size == sections.size
+                                    Checkbox(
+                                        checked = allSelected,
+                                        onCheckedChange = {
+                                            if (allSelected) {
+                                                selectedSectionIds.clear()
+                                            } else {
+                                                selectedSectionIds.clear()
+                                                selectedSectionIds.addAll(sections.map { it.id })
+                                            }
+                                        },
+                                        colors = CheckboxDefaults.colors(checkedColor = Color(0xFFEA580C))
+                                    )
+                                    Text(
+                                        text = "${selectedSectionIds.size} Selected",
+                                        fontSize = 12.sp,
+                                        fontWeight = FontWeight.Bold,
+                                        color = Color.Black
+                                    )
+                                }
+
+                                Row(
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    horizontalArrangement = Arrangement.spacedBy(6.dp)
+                                ) {
+                                    Button(
+                                        onClick = { showDeleteSelectedDialog = true },
+                                        enabled = selectedSectionIds.isNotEmpty(),
+                                        colors = ButtonDefaults.buttonColors(
+                                            containerColor = Color(0xFFDC2626),
+                                            disabledContainerColor = Color(0xFFFCA5A5)
+                                        ),
+                                        shape = RoundedCornerShape(10.dp),
+                                        contentPadding = PaddingValues(horizontal = 10.dp, vertical = 0.dp),
+                                        modifier = Modifier.height(32.dp)
+                                    ) {
+                                        Icon(Icons.Default.Delete, contentDescription = null, modifier = Modifier.size(14.dp), tint = Color.White)
+                                        Spacer(modifier = Modifier.width(4.dp))
+                                        Text(
+                                            text = "Delete (${selectedSectionIds.size})",
+                                            fontSize = 11.sp,
+                                            fontWeight = FontWeight.Bold,
+                                            color = Color.White
+                                        )
+                                    }
+
+                                    Surface(
+                                        onClick = {
+                                            isSelectMode = false
+                                            selectedSectionIds.clear()
+                                        },
+                                        shape = RoundedCornerShape(10.dp),
+                                        color = Color(0xFFF3F4F6),
+                                        modifier = Modifier.height(32.dp)
+                                    ) {
+                                        Box(
+                                            contentAlignment = Alignment.Center,
+                                            modifier = Modifier.padding(horizontal = 10.dp)
+                                        ) {
+                                            Text(
+                                                text = "Cancel",
+                                                fontSize = 11.sp,
+                                                fontWeight = FontWeight.SemiBold,
+                                                color = Color(0xFF4B5563)
+                                            )
+                                        }
+                                    }
+                                }
+                            }
                         }
-                        item {
-                            Spacer(modifier = Modifier.height(60.dp))
+
+                        LazyColumn(
+                            modifier = Modifier.fillMaxSize(),
+                            verticalArrangement = Arrangement.spacedBy(10.dp)
+                        ) {
+                            items(sections, key = { it.id }) { section ->
+                                val isSelected = selectedSectionIds.contains(section.id)
+                                SectionCard(
+                                    section = section,
+                                    isSelectMode = isSelectMode,
+                                    isSelected = isSelected,
+                                    onToggleSelect = {
+                                        if (isSelected) {
+                                            selectedSectionIds.remove(section.id)
+                                        } else {
+                                            selectedSectionIds.add(section.id)
+                                        }
+                                    },
+                                    onClick = {
+                                        if (isSelectMode) {
+                                            if (isSelected) selectedSectionIds.remove(section.id)
+                                            else selectedSectionIds.add(section.id)
+                                        } else {
+                                            onOpenSection(section)
+                                        }
+                                    },
+                                    onDelete = { sectionToDelete = section }
+                                )
+                            }
+                            item {
+                                Spacer(modifier = Modifier.height(60.dp))
+                            }
                         }
                     }
                 }
@@ -352,39 +440,6 @@ fun SectionsScreen(
         )
     }
 
-    // Delete All Confirmation Dialog
-    if (showDeleteAllDialog) {
-        AlertDialog(
-            onDismissRequest = { showDeleteAllDialog = false },
-            title = { Text("Delete ALL Leads & Sections?", fontWeight = FontWeight.Bold, color = Color.Black) },
-            text = {
-                Text(
-                    text = "This will permanently delete all CSV sections, imported leads, and call history at once. This action cannot be undone.",
-                    color = Color.Black
-                )
-            },
-            confirmButton = {
-                Button(
-                    onClick = {
-                        viewModel.deleteAllSectionsAndLeads {
-                            showDeleteAllDialog = false
-                            Toast.makeText(context, "All leads and sections deleted", Toast.LENGTH_SHORT).show()
-                        }
-                    },
-                    colors = ButtonDefaults.buttonColors(containerColor = Color(0xFFDC2626)),
-                    shape = RoundedCornerShape(12.dp)
-                ) {
-                    Text("Delete Everything", fontWeight = FontWeight.Bold)
-                }
-            },
-            dismissButton = {
-                TextButton(onClick = { showDeleteAllDialog = false }) {
-                    Text("Cancel", color = Color.Black)
-                }
-            }
-        )
-    }
-
     // Delete Single Section Dialog
     sectionToDelete?.let { sec ->
         AlertDialog(
@@ -412,11 +467,45 @@ fun SectionsScreen(
             }
         )
     }
+
+    // Delete Multiple Selected Sections Dialog
+    if (showDeleteSelectedDialog) {
+        AlertDialog(
+            onDismissRequest = { showDeleteSelectedDialog = false },
+            title = { Text("Delete ${selectedSectionIds.size} Selected Sections?", fontWeight = FontWeight.Bold, color = Color.Black) },
+            text = { Text("This will permanently delete the selected ${selectedSectionIds.size} sections and all their imported leads.", color = Color.Black) },
+            confirmButton = {
+                Button(
+                    onClick = {
+                        val idsToDelete = selectedSectionIds.toList()
+                        viewModel.deleteMultipleSections(idsToDelete) {
+                            showDeleteSelectedDialog = false
+                            isSelectMode = false
+                            selectedSectionIds.clear()
+                            Toast.makeText(context, "${idsToDelete.size} sections deleted", Toast.LENGTH_SHORT).show()
+                        }
+                    },
+                    colors = ButtonDefaults.buttonColors(containerColor = Color(0xFFDC2626)),
+                    shape = RoundedCornerShape(12.dp)
+                ) {
+                    Text("Delete Selected", fontWeight = FontWeight.Bold)
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { showDeleteSelectedDialog = false }) {
+                    Text("Cancel", color = Color.Black)
+                }
+            }
+        )
+    }
 }
 
 @Composable
 private fun SectionCard(
     section: CampaignEntity,
+    isSelectMode: Boolean = false,
+    isSelected: Boolean = false,
+    onToggleSelect: () -> Unit = {},
     onClick: () -> Unit,
     onDelete: () -> Unit
 ) {
@@ -424,55 +513,77 @@ private fun SectionCard(
         (section.completedContacts.toFloat() / section.totalContacts.toFloat()).coerceIn(0f, 1f)
     } else 0f
 
+    val cardBorder = if (isSelected) BorderStroke(2.dp, AppStatusColors.brandBlue) else BorderStroke(1.dp, Color(0xFFE2E8F0))
+    val cardBg = if (isSelected) Color(0xFFF0F9FF) else Color.White
+    val titleColor = Color(0xFF09090B)
+    val subtitleColor = Color(0xFF64748B)
+    val progressColor = AppStatusColors.brandBlue
+    val progressTrack = Color(0xFFE0F2FE)
+    val actionColor = AppStatusColors.brandBlue
+
     Card(
         modifier = Modifier
             .fillMaxWidth()
             .clickable(onClick = onClick),
-        shape = RoundedCornerShape(20.dp),
-        colors = CardDefaults.cardColors(containerColor = Color.White),
-        border = BorderStroke(1.dp, Color(0xFFF0EBE1)),
-        elevation = CardDefaults.cardElevation(defaultElevation = 2.dp)
+        shape = RoundedCornerShape(22.dp),
+        colors = CardDefaults.cardColors(containerColor = cardBg),
+        border = cardBorder,
+        elevation = CardDefaults.cardElevation(defaultElevation = if (isSelected) 2.dp else 0.dp)
     ) {
-        Column(modifier = Modifier.padding(16.dp)) {
+        Column(modifier = Modifier.padding(18.dp)) {
             Row(
                 modifier = Modifier.fillMaxWidth(),
                 horizontalArrangement = Arrangement.SpaceBetween,
                 verticalAlignment = Alignment.CenterVertically
             ) {
+                if (isSelectMode) {
+                    Checkbox(
+                        checked = isSelected,
+                        onCheckedChange = { onToggleSelect() },
+                        colors = CheckboxDefaults.colors(
+                            checkedColor = AppStatusColors.brandBlue,
+                            checkmarkColor = Color.White
+                        ),
+                        modifier = Modifier.padding(end = 6.dp)
+                    )
+                }
+
                 Column(modifier = Modifier.weight(1f)) {
                     Text(
                         text = section.name,
                         fontSize = 17.sp,
                         fontWeight = FontWeight.ExtraBold,
                         letterSpacing = (-0.3).sp,
-                        color = Color(0xFF0A0A0A),
+                        color = titleColor,
                         maxLines = 1,
                         overflow = TextOverflow.Ellipsis
                     )
                     if (!section.genre.isNullOrBlank()) {
                         Text(
-                            text = "🏷️ ${section.genre}",
-                            fontSize = 11.sp,
-                            fontWeight = FontWeight.SemiBold,
-                            color = Color(0xFFEA580C)
+                            text = section.genre,
+                            fontSize = 11.5.sp,
+                            fontWeight = FontWeight.Medium,
+                            color = subtitleColor
                         )
                     }
                 }
 
-                // Soft Red Square Delete Button
-                Surface(
-                    onClick = onDelete,
-                    shape = RoundedCornerShape(12.dp),
-                    color = Color(0xFFFEE2E2),
-                    modifier = Modifier.size(36.dp)
-                ) {
-                    Box(contentAlignment = Alignment.Center) {
-                        Icon(
-                            imageVector = Icons.Default.Delete,
-                            contentDescription = "Delete Section",
-                            tint = Color(0xFFDC2626),
-                            modifier = Modifier.size(18.dp)
-                        )
+                if (!isSelectMode) {
+                    // Minimal Circular Delete Button
+                    Surface(
+                        onClick = onDelete,
+                        shape = CircleShape,
+                        color = Color(0xFFFEE2E2),
+                        modifier = Modifier.size(36.dp)
+                    ) {
+                        Box(contentAlignment = Alignment.Center) {
+                            Icon(
+                                imageVector = Icons.Default.Delete,
+                                contentDescription = "Delete Section",
+                                tint = Color(0xFFDC2626),
+                                modifier = Modifier.size(16.dp)
+                            )
+                        }
                     }
                 }
             }
@@ -486,29 +597,29 @@ private fun SectionCard(
                 verticalAlignment = Alignment.CenterVertically
             ) {
                 Text(
-                    text = "${section.completedContacts} of ${section.totalContacts} calls completed",
+                    text = "${section.completedContacts} of ${section.totalContacts} calls",
                     fontSize = 12.sp,
                     fontWeight = FontWeight.Normal,
-                    color = Color(0xFF4B5563)
+                    color = subtitleColor
                 )
                 Text(
                     text = "${(progress * 100).toInt()}% Done",
                     fontSize = 12.sp,
-                    fontWeight = FontWeight.ExtraBold,
-                    color = Color(0xFFEA580C)
+                    fontWeight = FontWeight.Bold,
+                    color = progressColor
                 )
             }
 
-            Spacer(modifier = Modifier.height(6.dp))
+            Spacer(modifier = Modifier.height(8.dp))
 
-            // Rounded thick Progress Bar
+            // Minimalist Linear Progress Bar
             LinearProgressIndicator(
                 progress = { progress },
                 modifier = Modifier
                     .fillMaxWidth()
-                    .height(8.dp),
-                color = Color(0xFFEA580C),
-                trackColor = Color(0xFFFED7AA)
+                    .height(6.dp),
+                color = progressColor,
+                trackColor = progressTrack
             )
 
             Spacer(modifier = Modifier.height(14.dp))
@@ -523,7 +634,7 @@ private fun SectionCard(
                     text = "Open Section & Call Leads ➔",
                     fontSize = 12.sp,
                     fontWeight = FontWeight.Bold,
-                    color = Color(0xFFEA580C)
+                    color = actionColor
                 )
             }
         }
@@ -555,8 +666,8 @@ private fun GlobalHistoryCard(
                 // Section badge tag
                 Surface(
                     shape = RoundedCornerShape(AppSpacing.pillRadius),
-                    color = Color(0xFFFFEDD5),
-                    border = BorderStroke(0.5.dp, Color(0xFFEA580C))
+                    color = AppStatusColors.brandBlueLight,
+                    border = BorderStroke(0.5.dp, AppStatusColors.brandBlue)
                 ) {
                     Text(
                         text = "📁 $sectionName" + if (!sectionGenre.isNullOrBlank()) " • $sectionGenre" else "",
@@ -639,14 +750,14 @@ private fun GlobalHistoryCard(
             Surface(
                 onClick = onDial,
                 shape = CircleShape,
-                color = Color(0xFFFFEDD5),
+                color = AppStatusColors.brandBlueLight,
                 modifier = Modifier.size(40.dp)
             ) {
                 Box(contentAlignment = Alignment.Center) {
                     Icon(
                         imageVector = Icons.Default.Phone,
                         contentDescription = "Redial",
-                        tint = Color(0xFFEA580C),
+                        tint = AppStatusColors.brandBlue,
                         modifier = Modifier.size(18.dp)
                     )
                 }
@@ -734,16 +845,47 @@ private fun CreateSectionDialog(
                     )
                     Spacer(modifier = Modifier.height(AppSpacing.md))
 
-                    Button(
+                    // Prominent, High-Contrast CSV File Picker Button
+                    Card(
                         onClick = { filePickerLauncher.launch("*/*") },
-                        colors = ButtonDefaults.buttonColors(containerColor = Color(0xFFFFEDD5)),
-                        modifier = Modifier.fillMaxWidth(),
-                        shape = RoundedCornerShape(12.dp)
+                        shape = RoundedCornerShape(14.dp),
+                        colors = CardDefaults.cardColors(
+                            containerColor = if (selectedFileName != null) Color(0xFFF0FDF4) else AppStatusColors.brandBlue
+                        ),
+                        border = BorderStroke(
+                            1.5.dp,
+                            if (selectedFileName != null) Color(0xFF22C55E) else Color(0xFF0369A1)
+                        ),
+                        modifier = Modifier.fillMaxWidth()
                     ) {
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(horizontal = 16.dp, vertical = 14.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.Center
+                        ) {
+                            Icon(
+                                imageVector = if (selectedFileName != null) Icons.Default.Done else Icons.Default.Add,
+                                contentDescription = null,
+                                tint = if (selectedFileName != null) Color(0xFF15803D) else Color.White,
+                                modifier = Modifier.size(20.dp)
+                            )
+                            Spacer(modifier = Modifier.width(8.dp))
+                            Text(
+                                text = if (selectedFileName != null) "CSV Selected: $selectedFileName" else "Select .CSV File from Device",
+                                fontWeight = FontWeight.Bold,
+                                fontSize = 13.5.sp,
+                                color = if (selectedFileName != null) Color(0xFF15803D) else Color.White
+                            )
+                        }
+                    }
+                    if (selectedFileName != null) {
                         Text(
-                            text = if (selectedFileName != null) "📁 $selectedFileName (Tap to change)" else "📂 Select .CSV File from Device",
-                            fontWeight = FontWeight.Bold,
-                            color = Color(0xFFEA580C)
+                            text = "Tap above if you want to select a different CSV file.",
+                            fontSize = 11.sp,
+                            color = Color(0xFF71717A),
+                            modifier = Modifier.padding(start = 4.dp, top = 4.dp)
                         )
                     }
 
@@ -759,7 +901,7 @@ private fun CreateSectionDialog(
                     OutlinedTextField(
                         value = csvText,
                         onValueChange = { csvText = it },
-                        placeholder = { Text("Name, Phone, Company\nRamesh, 9876543210, ABC Corp\nSunita, 9123456789, XYZ Ltd") },
+                        placeholder = { Text("Name, Phone, Company\nJohn Doe, 9876543210, ABC Corp\nJane Smith, 9123456789, XYZ Ltd") },
                         modifier = Modifier
                             .fillMaxWidth()
                             .height(120.dp),
@@ -771,14 +913,14 @@ private fun CreateSectionDialog(
                         text = "Leads Verification Summary",
                         fontSize = 15.sp,
                         fontWeight = FontWeight.Bold,
-                        color = Color(0xFFEA580C)
+                        color = AppStatusColors.brandBlue
                     )
                     Spacer(modifier = Modifier.height(AppSpacing.sm))
                     Card(
                         modifier = Modifier.fillMaxWidth(),
                         shape = RoundedCornerShape(14.dp),
-                        colors = CardDefaults.cardColors(containerColor = Color(0xFFFFF7ED)),
-                        border = BorderStroke(1.dp, Color(0xFFFED7AA))
+                        colors = CardDefaults.cardColors(containerColor = Color(0xFFF0FDF4)),
+                        border = BorderStroke(1.dp, Color(0xFFBBF7D0))
                     ) {
                         Column(modifier = Modifier.padding(AppSpacing.md)) {
                             Text("✅ Valid Leads Ready: ${s.validCount}", fontWeight = FontWeight.Bold, color = AppStatusColors.successLight, fontSize = 13.sp)
@@ -806,7 +948,7 @@ private fun CreateSectionDialog(
                             importSummary = summary
                         }
                     },
-                    colors = ButtonDefaults.buttonColors(containerColor = Color(0xFFEA580C)),
+                    colors = ButtonDefaults.buttonColors(containerColor = AppStatusColors.brandBlue),
                     shape = RoundedCornerShape(12.dp)
                 ) {
                     Text("Verify & Create Section")
@@ -814,7 +956,7 @@ private fun CreateSectionDialog(
             } else {
                 Button(
                     onClick = onDismiss,
-                    colors = ButtonDefaults.buttonColors(containerColor = Color(0xFFEA580C)),
+                    colors = ButtonDefaults.buttonColors(containerColor = AppStatusColors.brandBlue),
                     shape = RoundedCornerShape(12.dp)
                 ) {
                     Text("Done (${importSummary?.validCount ?: 0} Leads Added)")

@@ -22,6 +22,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.example.mobileapp.ui.theme.AppSpacing
@@ -48,13 +49,13 @@ fun AppPillTabBar(
         modifier = modifier.fillMaxWidth(),
         shape = RoundedCornerShape(AppSpacing.pillRadius),
         colors = CardDefaults.cardColors(containerColor = Color.White),
-        border = BorderStroke(1.dp, Color(0xFFF0EBE1)),
-        elevation = CardDefaults.cardElevation(defaultElevation = 2.dp)
+        border = BorderStroke(1.dp, Color(0xFFE4E4E7)),
+        elevation = CardDefaults.cardElevation(defaultElevation = 0.dp)
     ) {
         Row(
             modifier = Modifier
                 .fillMaxWidth()
-                .padding(vertical = 4.dp, horizontal = 4.dp),
+                .padding(4.dp),
             verticalAlignment = Alignment.CenterVertically
         ) {
             tabs.forEachIndexed { index, tab ->
@@ -68,43 +69,21 @@ fun AppPillTabBar(
                 Box(
                     modifier = Modifier
                         .weight(1f)
-                        .clickable { onTabSelected(index) }
-                        .padding(vertical = 6.dp),
+                        .height(38.dp)
+                        .background(
+                            if (isSelected) Color(0xFF0284C7) else Color.Transparent,
+                            RoundedCornerShape(AppSpacing.pillRadius)
+                        )
+                        .clickable { onTabSelected(index) },
                     contentAlignment = Alignment.Center
                 ) {
-                    Column(
-                        horizontalAlignment = Alignment.CenterHorizontally,
-                        verticalArrangement = Arrangement.Center
-                    ) {
-                        Text(
-                            text = label,
-                            fontSize = 13.sp,
-                            fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Medium,
-                            color = if (isSelected) MaterialTheme.colorScheme.primary else Color(0xFF374151)
-                        )
-
-                        Spacer(modifier = Modifier.height(4.dp))
-
-                        // Orange underline indicator for selected tab
-                        Box(
-                            modifier = Modifier
-                                .width(if (isSelected) 60.dp else 0.dp)
-                                .height(3.dp)
-                                .background(
-                                    if (isSelected) MaterialTheme.colorScheme.primary else Color.Transparent,
-                                    RoundedCornerShape(2.dp)
-                                )
-                        )
-                    }
-                }
-
-                // Thin subtle vertical divider between tabs
-                if (index < tabs.size - 1) {
-                    Box(
-                        modifier = Modifier
-                            .width(1.dp)
-                            .height(20.dp)
-                            .background(Color(0xFFE5E7EB))
+                    Text(
+                        text = label,
+                        fontSize = 12.sp,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                        fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Medium,
+                        color = if (isSelected) Color.White else Color(0xFF475569)
                     )
                 }
             }

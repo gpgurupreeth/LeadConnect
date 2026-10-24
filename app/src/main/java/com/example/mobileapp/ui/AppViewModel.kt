@@ -38,6 +38,8 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
     val auditEventDao = db.auditEventDao()
 
     val realCaller = AndroidTelecomCaller(application)
+    val isCallActive = realCaller.isCallActive
+    val callFinishedEvent = realCaller.callFinishedEvent
 
     // Sections (Campaigns)
     val sectionsFlow: Flow<List<CampaignEntity>> = campaignDao.getAllCampaigns()
@@ -306,6 +308,37 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
             val updatedList = customerDao.getCustomersForSectionList(lead.sectionId)
             val completedCount = updatedList.count { it.isCleared }
             campaignDao.updateCounts(lead.sectionId, updatedList.size, completedCount)
+            withContext(Dispatchers.Main) {
+                onComplete()
+            }
+        }
+    }
+
+    /**
+     * Deletes multiple selected leads from a section.
+     */
+    fun deleteMultipleLeads(leadIds: List<Long>, sectionId: Long, onComplete: () -> Unit) {
+        viewModelScope.launch(Dispatchers.IO) {
+            customerDao.deleteCustomersByIds(leadIds)
+            val updatedList = customerDao.getCustomersForSectionList(sectionId)
+            val completedCount = updatedList.count { it.isCleared }
+            campaignDao.updateCounts(sectionId, updatedList.size, completedCount)
+            withContext(Dispatchers.Main) {
+                onComplete()
+            }
+        }
+    }
+
+    /**
+     * Deletes multiple selected sections and their leads.
+     */
+    fun deleteMultipleSections(sectionIds: List<Long>, onComplete: () -> Unit) {
+        viewModelScope.launch(Dispatchers.IO) {
+            sectionIds.forEach { sId ->
+                customerDao.deleteCustomersBySection(sId)
+                callAttemptDao.deleteAttemptsBySection(sId)
+            }
+            campaignDao.deleteCampaignsByIds(sectionIds)
             withContext(Dispatchers.Main) {
                 onComplete()
             }

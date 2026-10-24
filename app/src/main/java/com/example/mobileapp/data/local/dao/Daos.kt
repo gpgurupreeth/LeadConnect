@@ -62,6 +62,9 @@ interface CustomerDao {
     @Query("DELETE FROM customers WHERE id = :id")
     suspend fun deleteCustomerById(id: Long)
 
+    @Query("DELETE FROM customers WHERE id IN (:ids)")
+    suspend fun deleteCustomersByIds(ids: List<Long>)
+
     @Query("DELETE FROM customers WHERE sectionId = :sectionId")
     suspend fun deleteCustomersBySection(sectionId: Long)
 
@@ -91,6 +94,9 @@ interface CampaignDao {
 
     @Query("DELETE FROM campaigns WHERE id = :id")
     suspend fun deleteCampaign(id: Long)
+
+    @Query("DELETE FROM campaigns WHERE id IN (:ids)")
+    suspend fun deleteCampaignsByIds(ids: List<Long>)
 
     @Query("DELETE FROM campaigns")
     suspend fun deleteAll()

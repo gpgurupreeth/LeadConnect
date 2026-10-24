@@ -22,55 +22,60 @@ object AppSpacing {
     val xxl = 32.dp
 
     val minTouchTarget = 48.dp
-    val cardRadius = 14.dp
-    val buttonRadius = 10.dp
-    val pillRadius = 20.dp
+    val cardRadius = 24.dp       // Luxurious Dribbble-style rounded corners
+    val buttonRadius = 14.dp
+    val pillRadius = 28.dp       // Full pill segmented controls
 }
 
-// Semantic Status Colors (Warm & Executive)
+// Semantic Status Colors (Clean & Modern)
 object AppStatusColors {
-    val successLight = Color(0xFF15803D)
+    val successLight = Color(0xFF16A34A)       // Crisp Emerald
     val successBgLight = Color(0xFFDCFCE7)
 
-    val warningLight = Color(0xFFC2410C)       // Deep Amber Orange
-    val warningBgLight = Color(0xFFFFEDD5)     // Soft Cream Orange
+    val warningLight = Color(0xFFD97706)       // Warm Amber
+    val warningBgLight = Color(0xFFFEF3C7)
 
-    val errorLight = Color(0xFFDC2626)
+    val errorLight = Color(0xFFDC2626)         // Crisp Coral Red
     val errorBgLight = Color(0xFFFEE2E2)
 
-    val infoLight = Color(0xFFEA580C)          // Primary Brand Orange
-    val infoBgLight = Color(0xFFFFF7ED)
+    val infoLight = Color(0xFF0284C7)          // Electric Logo Cyan/Blue
+    val infoBgLight = Color(0xFFE0F2FE)
 
-    val suppressedLight = Color(0xFF6B7280)
-    val suppressedBgLight = Color(0xFFF3F4F6)
+    val suppressedLight = Color(0xFF71717A)    // Neutral Slate
+    val suppressedBgLight = Color(0xFFF4F4F5)
+
+    val activeCardDark = Color(0xFF0284C7)     // Electric Blue Brand Card Accent
+    val brandBlue = Color(0xFF0284C7)          // LeadConnect Electric Blue
+    val brandBlueLight = Color(0xFFE0F2FE)
+    val brandCyan = Color(0xFF38BDF8)          // Accent Cyan
 }
 
-// Light Cream & Orange Palette with Crisp Black Text
-private val LightCreamOrangeColorScheme = lightColorScheme(
-    primary = Color(0xFFEA580C),              // Vibrant Brand Orange
+// Minimalist Blue & White Light Palette (Pure white cards, crisp blue accents, high-contrast black texts)
+private val DribbbleMinimalColorScheme = lightColorScheme(
+    primary = Color(0xFF0284C7),              // Electric Blue Brand
     onPrimary = Color.White,
-    primaryContainer = Color(0xFFFFEDD5),     // Warm Peach/Cream Container
-    onPrimaryContainer = Color(0xFF9A3412),
+    primaryContainer = Color(0xFFE0F2FE),     // Soft Blue Container
+    onPrimaryContainer = Color(0xFF0369A1),
 
-    secondary = Color(0xFFC2410C),            // Rust Orange
+    secondary = Color(0xFF0284C7),            // Electric Blue Brand Accent
     onSecondary = Color.White,
-    secondaryContainer = Color(0xFFFFF7ED),
-    onSecondaryContainer = Color(0xFF7C2D12),
+    secondaryContainer = Color(0xFFE0F2FE),
+    onSecondaryContainer = Color(0xFF0369A1),
 
-    tertiary = Color(0xFFF97316),             // Amber Orange
+    tertiary = Color(0xFF38BDF8),             // Cyan Highlight
     onTertiary = Color.White,
-    tertiaryContainer = Color(0xFFFFEDD5),
-    onTertiaryContainer = Color(0xFF431407),
+    tertiaryContainer = Color(0xFFE0F2FE),
+    onTertiaryContainer = Color(0xFF0C4A6E),
 
-    background = Color(0xFFFAF7F2),           // Soft Warm Light Cream
-    onBackground = Color(0xFF0F0F0F),         // Crisp Solid Black Text
-    surface = Color(0xFFFFFFFF),              // Pure Clean Card Surface
-    onSurface = Color(0xFF0A0A0A),            // Crisp Black Headings & Text
-    surfaceVariant = Color(0xFFF5EFE6),       // Light Cream Tile Background
-    onSurfaceVariant = Color(0xFF262626),     // Dark Slate Black Secondary Text
+    background = Color(0xFFF8FAFC),           // Clean Crisp White Canvas
+    onBackground = Color(0xFF09090B),         // High-Contrast Pure Charcoal/Black
+    surface = Color(0xFFFFFFFF),              // Crisp White Cards
+    onSurface = Color(0xFF09090B),            // Crisp Black Headings & Text
+    surfaceVariant = Color(0xFFF0F9FF),       // Soft Sky-White Tile
+    onSurfaceVariant = Color(0xFF64748B),     // Clean Slate Secondary
 
-    outline = Color(0xFFE5DDD0),              // Warm Cream Border
-    outlineVariant = Color(0xFFECE4D8),
+    outline = Color(0xFFE2E8F0),              // Clean Ultra-Subtle Border
+    outlineVariant = Color(0xFFF1F5F9),
 
     error = Color(0xFFDC2626),
     onError = Color.White,
@@ -165,9 +170,20 @@ val AppTypography = Typography(
 
 @Composable
 fun MobileAppTheme(content: @Composable () -> Unit) {
-    MaterialTheme(
-        colorScheme = LightCreamOrangeColorScheme,
-        typography = AppTypography,
-        content = content
+    // Enforce consistent density and font scale so UI never stretches, breaks or truncates across different phone models
+    val currentDensity = androidx.compose.ui.platform.LocalDensity.current
+    val normalizedDensity = androidx.compose.ui.unit.Density(
+        density = currentDensity.density,
+        fontScale = 1.0f // Fixed fontScale guarantees identical layout across all devices regardless of system font scale
     )
+
+    androidx.compose.runtime.CompositionLocalProvider(
+        androidx.compose.ui.platform.LocalDensity provides normalizedDensity
+    ) {
+        MaterialTheme(
+            colorScheme = DribbbleMinimalColorScheme,
+            typography = AppTypography,
+            content = content
+        )
+    }
 }

@@ -9,6 +9,12 @@ import android.telephony.PhoneStateListener
 import android.telephony.TelephonyCallback
 import android.telephony.TelephonyManager
 import androidx.core.content.ContextCompat
+import kotlinx.coroutines.flow.MutableSharedFlow
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.SharedFlow
+import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asSharedFlow
+import kotlinx.coroutines.flow.asStateFlow
 
 /**
  * Raw telephony telemetry captured during an active call attempt.
@@ -34,6 +40,12 @@ class AndroidTelecomCaller(
     private val context: Context,
     private val telephonyManager: TelephonyManager = context.getSystemService(Context.TELEPHONY_SERVICE) as TelephonyManager
 ) : ICaller {
+
+    private val _isCallActive = MutableStateFlow(false)
+    val isCallActive: StateFlow<Boolean> = _isCallActive.asStateFlow()
+
+    private val _callFinishedEvent = MutableSharedFlow<RawCallObservation>(extraBufferCapacity = 1)
+    val callFinishedEvent: SharedFlow<RawCallObservation> = _callFinishedEvent.asSharedFlow()
 
     private var currentObservation: RawCallObservation? = null
     private val stateHistory = mutableListOf<Int>()
@@ -144,6 +156,11 @@ class AndroidTelecomCaller(
         stateHistory.add(state)
         if (state == TelephonyManager.CALL_STATE_OFFHOOK) {
             offhookDetected = true
+            _isCallActive.value = true
+        } else if (state == TelephonyManager.CALL_STATE_IDLE && offhookDetected) {
+            _isCallActive.value = false
+            val obs = finishCurrentCallObservation()
+            _callFinishedEvent.tryEmit(obs)
         }
     }
 
